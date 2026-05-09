@@ -1,0 +1,21 @@
+# meetai-ai-workers — merged from AudioWorker + gateway/worker deps
+torch>=2.1,<2.3
+torchaudio>=2.1,<2.3
+numpy>=1.24
+soundfile>=0.12
+
+openai-whisper
+pyannote.audio==3.1.1
+speechbrain==1.0.3
+
+transformers>=4.38,<5
+accelerate>=0.27
+sentencepiece>=0.1.99
+huggingface-hub>=0.20,<0.24
+
+redis>=5.0
+pydantic>=2.6
+python-dotenv>=1.0
+fastapi>=0.109
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9

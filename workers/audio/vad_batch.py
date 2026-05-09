@@ -1,34 +1,32 @@
-from pyannote.audio import Pipeline
+"""Pyannote VAD pipeline for **file / batch** analysis (offline)."""
+
+from __future__ import annotations
+
 import os
+
+from pyannote.audio import Pipeline
 
 
 class VoiceActivityDetector:
-    def __init__(self, use_auth_token=None):
+    def __init__(self, use_auth_token: str | None = None):
         if use_auth_token is None:
-            use_auth_token = os.getenv("HF_TOKEN")
+            use_auth_token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
         if use_auth_token:
             os.environ.setdefault("HUGGINGFACE_HUB_TOKEN", use_auth_token)
             os.environ.setdefault("HF_TOKEN", use_auth_token)
         try:
-            self.pipeline = Pipeline.from_pretrained(
-                "pyannote/voice-activity-detection"
-            )
+            self.pipeline = Pipeline.from_pretrained("pyannote/voice-activity-detection")
         except TypeError:
             try:
                 self.pipeline = Pipeline.from_pretrained(
-                    "pyannote/voice-activity-detection",
-                    token=use_auth_token
+                    "pyannote/voice-activity-detection", token=use_auth_token
                 )
             except TypeError:
                 self.pipeline = Pipeline.from_pretrained(
-                    "pyannote/voice-activity-detection",
-                    use_auth_token=use_auth_token
+                    "pyannote/voice-activity-detection", use_auth_token=use_auth_token
                 )
 
-    def run(self, audio_file: str) -> dict:
-        """
-        VAD analizi yapar ve süre bilgilerini döner
-        """
+    def runVoiceActivityDetection(self, audio_file: str) -> dict:
         vad = self.pipeline(audio_file)
 
         speech_time = 0.0
@@ -49,5 +47,5 @@ class VoiceActivityDetector:
             "silence_time": silence_time,
             "total_time": total_time,
             "speech_ratio": speech_ratio,
-            "silence_ratio": silence_ratio
+            "silence_ratio": silence_ratio,
         }
