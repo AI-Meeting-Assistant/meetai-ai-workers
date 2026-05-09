@@ -9,7 +9,7 @@ This document outlines the system design and implementation rules for the Python
 Our system is decomposed into these main components:
 
 - **FastAPI Gateway (`gateway.py`):** The primary entry point and protection proxy. It handles asynchronous HTTP requests, validates stream ticket credentials against Redis, and routes valid payloads to the correct worker. It exposes **`POST /ingest`** (single HTTP endpoint for media batches) and **`GET /health`** (readiness for the Node.js backend).
-- **Redis Client (`infrastructure/redis_client.py`):** An async singleton that provides two responsibilities: (1) ticket validation reads, and (2) publishing analysis results back to the Core Backend via Pub/Sub channels. A single module-level instance is shared across the entire application — never instantiate a new client per request.
+- **Redis clients:** **`infrastructure/redis_async_client.py`** (`redis.asyncio`) is used by the **gateway** for **ticket validation** reads only (§6). **`infrastructure/redis_client.py`** is a **sync** helper for **worker** Pub/Sub publish paths — one process-wide instance per worker process (same “no per-request churn” discipline).
 - **Audio Worker (`workers/audio/`):** Processes incoming audio chunks. Outputs **VAD**, **speaker diarization**, **talk-time metrics for the current ingest window only** (not cumulative per-speaker totals for the whole meeting unless added later upstream of Python), **transcript (ASR)** for that timeline window, and publishes a single structured payload **per window** to `meeting:{id}:audio`. Implementation spans multiple modules (ASR sliding context buffer lives here — see §1.3).
 - **Video Worker (`workers/video/`):** Consumes video chunks for attention/focus tracking; publishes to `meeting:{id}:vision`. Multiple modules allowed under `workers/video/`.
 - **Text Worker (`workers/text/`):** Runs **slower-cycle** NLP (e.g. agenda adherence / staying in context). It does **not** receive a multipart ingest part. It is fed **internally** from transcripts produced by the audio pipeline (in-process queue, IPC, or equivalent — see §3.2). It maintains a **per-meeting sliding transcript ring buffer** and a **periodic timer**; it publishes analysis to `meeting:{id}:text`. Multiple modules allowed under `workers/text/`.
@@ -61,11 +61,13 @@ The repository follows the **Separation of Concerns** principle, mirroring the p
 
 ```
 grad-project-ai-workers/
-├── gateway.py                        # FastAPI entry — routing and auth only
+├── gateway.py                        # FastAPI entry — routing and auth only (`GET /health`, `POST /ingest`)
+├── gateway_supervisor.py             # Spawns audio/video Processes + Pipe IPC (§6)
+├── gateway_schemas.py                # Standard HTTP envelope helpers (§10)
 ├── workers/
 │   ├── audio/                        # Audio + live pipeline + offline batch_runner
 │   │   ├── pipeline.py               # ``processLiveChunk`` → Redis :audio (+ text handoff)
-│   │   ├── worker_main.py            # ``audioWorkerLoop`` (multiprocessing Pipe from supervisor)
+│   │   ├── worker_main.py            # ``audio_worker_process_target`` / ``audioWorkerLoop`` (Pipe from supervisor)
 │   │   ├── batch_runner.py           # ``runBatchRunner`` — offline WAV pipeline (legacy ``AudioWorker/app.py`` logic)
 │   │   ├── context_buffer.py          # rolling ASR context (§1.2)
 │   │   ├── io_audio.py               # WAV bytes → mono float PCM @ ``TARGET_SAMPLE_RATE``
@@ -76,12 +78,16 @@ grad-project-ai-workers/
 │   │   ├── transcript_batch.py        # Whisper file + alignment (offline)
 │   │   ├── transcript_refiner.py      # Llama refinement — **offline only**
 │   │   └── schemas.py                # Redis + Pipe Pydantic models
-│   ├── video/                        # Vision worker → :vision Redis
+│   ├── video/                        # Vision worker → ``meeting:{id}:vision``
+│   │   ├── pipeline.py               # ``processLiveVisionChunk`` stub → Redis
+│   │   ├── worker_main.py            # ``video_worker_process_target`` / ``videoWorkerLoop``
+│   │   └── schemas.py                # Redis vision payload models
 │   └── text/                         # Agenda / context NLP → :text Redis
 ├── core/
 │   └── fusion_publisher.py           # Redis Pub/Sub publish helpers
 ├── infrastructure/
-│   └── redis_client.py               # Async Redis singleton
+│   ├── redis_client.py               # Sync Redis helper for worker publish paths
+│   └── redis_async_client.py         # ``redis.asyncio`` singleton for gateway ticket reads (§6)
 ├── config.py                         # Optional: central place to load durations from env (recommended)
 ├── models/
 │   ├── audio_model.py
@@ -276,3 +282,10 @@ Frontend: **`VITE_PYTHON_INGEST_BASE_URL`** and **the same effective `D`** (or c
 | 10 | Real vision in **`workers/video/`** | **3+** |
 | 11 | Real agenda/context model in **`workers/text/`** | **3+** |
 | 12 | Graceful shutdown / Watchdog polish | **4** |
+
+**Gateway run:** From the directory that contains `gateway.py`, with Redis reachable and `.env` aligned with Node:
+
+```bash
+uvicorn gateway:app --host 0.0.0.0 --port ${PORT:-8000}
+```
+

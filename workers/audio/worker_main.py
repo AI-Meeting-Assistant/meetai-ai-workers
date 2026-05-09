@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import traceback
 from pathlib import Path
+from typing import Any
 
 # Repo root → ``import workers``, ``config``, ``infrastructure``
 _ROOT = Path(__file__).resolve().parents[2]
@@ -12,7 +13,28 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 
-def audioWorkerLoop(conn) -> None:
+def audio_worker_process_target(recv_conn: Any, readiness_queue: Any) -> None:
+    """Module-level fork entry for ``multiprocessing.Process`` (Windows spawn-safe)."""
+    audio_worker_startup(recv_conn, readiness_queue)
+
+
+def audio_worker_startup(recv_conn: Any, readiness_queue: Any) -> None:
+    """Warm up ASR/audio models once, publish readiness, then ``audioWorkerLoop``."""
+    try:
+        from models.audio_model import warmUpLiveAudioModels
+
+        warmUpLiveAudioModels()
+        if readiness_queue is not None:
+            readiness_queue.put({"module": "audio", "ok": True})
+    except Exception as e:
+        if readiness_queue is not None:
+            readiness_queue.put({"module": "audio", "ok": False, "error": str(e)})
+        traceback.print_exc()
+        return
+    audioWorkerLoop(recv_conn)
+
+
+def audioWorkerLoop(conn: Any) -> None:
     """
     ``conn``: child end of a **Pipe** created by supervisor (``duplex=False``):
     Parent ``send``s dict messages; worker ``recv``s.
@@ -54,4 +76,4 @@ def audioWorkerLoop(conn) -> None:
 
 def main() -> None:
     """Standalone debug: import and call audioWorkerLoop(conn) from your supervisor."""
-    print("workers.audio.worker_main: import and call audioWorkerLoop(conn) from your supervisor.")
+    print("workers.audio.worker_main: import audio_worker_process_target from multiprocessing.")
