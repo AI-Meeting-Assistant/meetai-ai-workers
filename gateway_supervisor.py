@@ -8,7 +8,11 @@ import traceback
 from queue import Empty
 from typing import Any, Optional
 
-READINESS_SECONDS = 15
+from utils.logger import get_logger
+
+log = get_logger(__name__)
+
+READINESS_SECONDS = 90  # Whisper load on Windows spawn can take 30-60 s on first run
 
 
 def _wait_worker_readiness(
@@ -63,6 +67,9 @@ class WorkerSupervisor:
 
     def __init__(self) -> None:
         self._ctx = mp.get_context("spawn")
+        import threading
+        self.audio_send_lock = threading.Lock()
+        self.video_send_lock = threading.Lock()
         self._audio_send: Optional[Any] = None
         self._video_send: Optional[Any] = None
         self._audio_proc: Optional[mp.Process] = None
@@ -106,7 +113,8 @@ class WorkerSupervisor:
         self._video_proc.start()
 
         required = ("audio", "video")
-        outcomes, _ = _wait_worker_readiness(
+        log.info("Waiting for worker readiness", timeout_sec=READINESS_SECONDS, modules=required)
+        outcomes, errors = _wait_worker_readiness(
             readiness_queue,
             required,
             READINESS_SECONDS,
@@ -115,11 +123,16 @@ class WorkerSupervisor:
             if outcomes.get(mod) is not True:
                 if mod not in self.failed_modules:
                     self.failed_modules.append(mod)
+                log.error("Worker module failed readiness", module=mod, error=errors.get(mod))
+            else:
+                log.info("Worker module ready", module=mod)
 
         if self._audio_proc.exitcode not in (None, 0) and "audio" not in self.failed_modules:
             self.failed_modules.append("audio")
+            log.error("Audio worker process exited unexpectedly", exitcode=self._audio_proc.exitcode)
         if self._video_proc.exitcode not in (None, 0) and "video" not in self.failed_modules:
             self.failed_modules.append("video")
+            log.error("Video worker process exited unexpectedly", exitcode=self._video_proc.exitcode)
 
     def shutdown_blocking(self, join_timeout_seconds: float = 8.0) -> None:
         """Graceful Pipe shutdown signals; join with timeout."""
@@ -129,10 +142,11 @@ class WorkerSupervisor:
                 continue
             proc.join(timeout=max(1.0, join_timeout_seconds * 0.5))
             if proc.is_alive():
+                log.warning("Worker process did not exit, terminating", pid=proc.pid, name=proc.name)
                 try:
                     proc.terminate()
                 except Exception:
-                    traceback.print_exc()
+                    log.error("Failed to terminate worker process", exc_info=True)
                 proc.join(timeout=2.0)
         self._audio_send = self._video_send = None
         self._audio_proc = self._video_proc = None
@@ -184,26 +198,30 @@ class WorkerSupervisor:
 def enqueue_ingest_to_workers_blocking(
     audio_send_conn: Any,
     video_send_conn: Any,
+    audio_send_lock: Any,
+    video_send_lock: Any,
     *,
     meeting_id: str,
     offset_ms: int,
-    audio_wav_bytes: bytes,
+    audio_webm_bytes: bytes,
     video_bytes: bytes,
 ) -> None:
-    """Send mirrored chunk payloads to audio and vision workers (**blocking** Pipe send)."""
-    audio_send_conn.send(
-        {
-            "type": "chunk",
-            "meetingId": meeting_id,
-            "offsetMs": offset_ms,
-            "audioWavBytes": audio_wav_bytes,
-        }
-    )
-    video_send_conn.send(
-        {
-            "type": "chunk",
-            "meetingId": meeting_id,
-            "offsetMs": offset_ms,
-            "videoBytes": video_bytes,
-        }
-    )
+    """Send mirrored chunk payloads to audio and vision workers (**blocking** Pipe send, thread-safe)."""
+    with audio_send_lock:
+        audio_send_conn.send(
+            {
+                "type": "chunk",
+                "meetingId": meeting_id,
+                "offsetMs": offset_ms,
+                "audioWebmBytes": audio_webm_bytes,
+            }
+        )
+    with video_send_lock:
+        video_send_conn.send(
+            {
+                "type": "chunk",
+                "meetingId": meeting_id,
+                "offsetMs": offset_ms,
+                "videoBytes": video_bytes,
+            }
+        )

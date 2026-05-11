@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import multiprocessing
+import os
 import sys
 import traceback
 from contextlib import asynccontextmanager
@@ -23,6 +24,7 @@ load_dotenv()
 multiprocessing.freeze_support()
 
 from config import get_settings  # noqa: E402
+from utils.logger import get_logger  # noqa: E402
 from gateway_schemas import (  # noqa: E402
     error_envelope_json_response,
     ingest_success_response,
@@ -34,6 +36,8 @@ from infrastructure.redis_async_client import (  # noqa: E402
     ping_redis,
     validate_stream_ticket,
 )
+
+log = get_logger(__name__)
 
 
 def _health_failure_labels(redis_ok: bool, supervisor: WorkerSupervisor | None) -> list[str]:
@@ -57,17 +61,30 @@ def _health_is_ready(redis_ok: bool, supervisor: WorkerSupervisor | None) -> boo
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    log.info("Starting meetai-ai-workers gateway lifespan")
     loop = asyncio.get_running_loop()
     supervisor = WorkerSupervisor()
     await loop.run_in_executor(None, supervisor.start_blocking)
     app.state.worker_supervisor = supervisor
+    log.info("Worker processes started and ready")
     yield
+    log.info("Shutting down meetai-ai-workers gateway")
     await close_async_redis()
     await loop.run_in_executor(None, supervisor.shutdown_blocking)
+    log.info("Shutdown complete")
 
+
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="meetai-ai-workers gateway", lifespan=lifespan)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.exception_handler(RequestValidationError)
 async def _validation_envelope_handler(_request: Any, exc: RequestValidationError) -> Any:
@@ -115,16 +132,19 @@ async def ingest(
     if not _health_is_ready(redis_ok, supervisor) or supervisor is None:
         parts = sorted(set(_health_failure_labels(redis_ok, supervisor)))
         msg = "Service Unavailable: " + ", ".join(parts)
+        log.warning("Ingest rejected: service unavailable", meeting_id=meeting_id, labels=parts)
         return error_envelope_json_response(503, msg, http_status_code=503)
 
     ticket_outcome = await validate_stream_ticket(meeting_id, stream_ticket)
     if ticket_outcome is None:
+        log.error("Ticket validation failed due to Redis error", meeting_id=meeting_id)
         return error_envelope_json_response(
             503,
             "Redis unavailable during ticket validation.",
             http_status_code=503,
         )
     if ticket_outcome is False:
+        log.warning("Ingest rejected: invalid stream ticket", meeting_id=meeting_id, submitted_ticket=stream_ticket)
         return error_envelope_json_response(401, "invalid stream ticket", http_status_code=401)
 
     try:
@@ -138,21 +158,25 @@ async def ingest(
 
     stride = get_settings().media_chunk_duration_ms
     if stride <= 0 or offset_ms % stride != 0:
+        log.warning("Invalid offset alignment", meeting_id=meeting_id, offset_ms=offset_ms, stride=stride)
         return error_envelope_json_response(
             400,
             f"offsetMs must align to MEDIA_CHUNK_DURATION_MS ({stride} ms)",
             http_status_code=400,
         )
 
+    log.debug("Ingest chunk accepted", meeting_id=meeting_id, offset_ms=offset_ms)
     audio_bytes, video_bytes = await asyncio.gather(audio_chunk.read(), video_chunk.read())
 
     enqueue_callable = partial(
         enqueue_ingest_to_workers_blocking,
         supervisor.audio_pipe_send_end,
         supervisor.video_pipe_send_end,
+        supervisor.audio_send_lock,
+        supervisor.video_send_lock,
         meeting_id=meeting_id,
         offset_ms=offset_ms,
-        audio_wav_bytes=bytes(audio_bytes),
+        audio_webm_bytes=bytes(audio_bytes),
         video_bytes=bytes(video_bytes),
     )
     loop = asyncio.get_running_loop()
@@ -165,7 +189,7 @@ async def ingest(
         ValueError,
         RuntimeError,
     ) as e:
-        traceback.print_exc()
+        log.error("Ingest IPC failure", meeting_id=meeting_id, offset_ms=offset_ms, exc_info=True)
         return error_envelope_json_response(
             503,
             f"Ingest IPC failure: {type(e).__name__}",
@@ -173,3 +197,10 @@ async def ingest(
         )
 
     return ingest_success_response()
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    _port = int(os.getenv("PORT", "8000"))
+    uvicorn.run("gateway:app", host="0.0.0.0", port=_port, reload=False)
