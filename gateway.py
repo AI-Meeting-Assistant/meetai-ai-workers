@@ -74,17 +74,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     log.info("Shutdown complete")
 
 
-from fastapi.middleware.cors import CORSMiddleware
-
 app = FastAPI(title="meetai-ai-workers gateway", lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 @app.exception_handler(RequestValidationError)
 async def _validation_envelope_handler(_request: Any, exc: RequestValidationError) -> Any:
