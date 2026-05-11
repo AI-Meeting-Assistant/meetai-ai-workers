@@ -22,6 +22,7 @@ def audio_worker_startup(recv_conn: Any, readiness_queue: Any) -> None:
     """Warm up ASR/audio models once, publish readiness, then ``audioWorkerLoop``."""
     try:
         from models.audio_model import warmUpLiveAudioModels
+        from workers.audio.pipeline import processLiveChunk  # validate imports early
 
         warmUpLiveAudioModels()
         if readiness_queue is not None:
@@ -31,20 +32,18 @@ def audio_worker_startup(recv_conn: Any, readiness_queue: Any) -> None:
             readiness_queue.put({"module": "audio", "ok": False, "error": str(e)})
         traceback.print_exc()
         return
-    audioWorkerLoop(recv_conn)
+    audioWorkerLoop(recv_conn, processLiveChunk)
 
 
-def audioWorkerLoop(conn: Any) -> None:
+def audioWorkerLoop(conn: Any, processLiveChunk: Any) -> None:
     """
     ``conn``: child end of a **Pipe** created by supervisor (``duplex=False``):
     Parent ``send``s dict messages; worker ``recv``s.
 
     Message shape::
-        {\"type\": \"chunk\", \"meetingId\": uuid, \"offsetMs\": int, \"audioWavBytes\": bytes}
+        {\"type\": \"chunk\", \"meetingId\": uuid, \"offsetMs\": int, \"audioWebmBytes\": bytes}
         {\"type\": \"shutdown\"}
     """
-    from workers.audio.pipeline import processLiveChunk
-
     while True:
         try:
             msg = conn.recv()
@@ -59,7 +58,7 @@ def audioWorkerLoop(conn: Any) -> None:
             continue
         meeting_id = msg.get("meetingId") or msg.get("meeting_id")
         offset_ms = msg.get("offsetMs", msg.get("offset_ms"))
-        wav = msg.get("audioWavBytes", msg.get("audio_wav_bytes", b""))
+        webm = msg.get("audioWebmBytes", msg.get("audio_webm_bytes", b""))
         text_pipe = msg.get("textPipe") or msg.get("text_pipe")
         if meeting_id is None or offset_ms is None:
             continue
@@ -67,7 +66,7 @@ def audioWorkerLoop(conn: Any) -> None:
             processLiveChunk(
                 meeting_id=str(meeting_id),
                 offset_ms=int(offset_ms),
-                audio_wav_bytes=wav if isinstance(wav, (bytes, bytearray)) else bytes(wav),
+                audio_webm_bytes=webm if isinstance(webm, (bytes, bytearray)) else bytes(webm),
                 text_pipe_send_end=text_pipe,
             )
         except Exception:

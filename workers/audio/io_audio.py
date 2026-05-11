@@ -1,4 +1,10 @@
-"""Decode upload / raw audio bytes → mono float32 PCM at ``TARGET_SAMPLE_RATE``."""
+"""Decode upload / raw audio bytes → mono float32 PCM at ``TARGET_SAMPLE_RATE``.
+
+Supports WAV, WebM/Opus, OGG, MP4, and any container FFmpeg can demux.
+``soundfile`` (libsndfile) is tried first for speed; for containers it cannot
+handle (e.g. WebM from the browser MediaRecorder), we fall back to ``av``
+(PyAV — pip-installable FFmpeg bindings, no system binary required).
+"""
 
 from __future__ import annotations
 
@@ -9,22 +15,50 @@ from typing import Tuple
 import numpy as np
 
 
-def pcmMonoF32FromWavBytes(data: bytes, target_sr: int) -> Tuple[np.ndarray, int]:
-    """
-    Read WAV container bytes; convert to mono float32 in [-1, 1] at ``target_sr``.
-    Requires ``soundfile``.
-    """
-    import soundfile as sf
+# ---------------------------------------------------------------------------
+# Public decoder — accepts WAV *and* WebM/Opus/OGG/MP4/etc.
+# ---------------------------------------------------------------------------
 
-    buf = BytesIO(data)
-    samples, sr = sf.read(buf, dtype="float32", always_2d=False)
-    if samples.ndim > 1:
-        samples = np.mean(samples, axis=1)
-    if sr != target_sr:
-        samples = _resampleLinear(samples, sr, target_sr)
-        sr = target_sr
-    samples = np.clip(samples.astype(np.float32, copy=False), -1.0, 1.0)
-    return samples, sr
+def pcmMonoF32FromWebmBytes(data: bytes, target_sr: int) -> Tuple[np.ndarray, int]:
+    """
+    Decode WebM audio bytes to mono float32 PCM at ``target_sr``.
+    """
+    return _decodeViaAv(data, target_sr)
+
+
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+
+def _decodeViaAv(data: bytes, target_sr: int) -> Tuple[np.ndarray, int]:
+    """Decode any FFmpeg-supported container via PyAV (``pip install av``)."""
+    import av  # PyAV — bundles FFmpeg libs, no system binary needed
+
+    chunks: list[np.ndarray] = []
+    with av.open(BytesIO(data)) as container:
+        resampler = av.AudioResampler(
+            format="fltp",       # float32 planar
+            layout="mono",
+            rate=target_sr,
+        )
+        for frame in container.decode(audio=0):
+            for resampled in resampler.resample(frame):
+                # frame.to_ndarray() returns shape (channels, samples) for planar
+                arr = resampled.to_ndarray()  # shape: (1, N) for mono fltp
+                chunks.append(arr[0].astype(np.float32))
+
+        # Flush resampler
+        for resampled in resampler.resample(None):
+            arr = resampled.to_ndarray()
+            chunks.append(arr[0].astype(np.float32))
+
+    if not chunks:
+        return np.zeros(0, dtype=np.float32), target_sr
+
+    samples = np.concatenate(chunks)
+    samples = np.clip(samples, -1.0, 1.0)
+    return samples, target_sr
 
 
 def pcmMonoF32FromNumpy(samples: np.ndarray, src_sr: int, target_sr: int) -> Tuple[np.ndarray, int]:

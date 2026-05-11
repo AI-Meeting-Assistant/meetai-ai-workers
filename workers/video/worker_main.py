@@ -22,6 +22,7 @@ def video_worker_startup(recv_conn: Any, readiness_queue: Any) -> None:
     """Run stub warm-up, signal readiness, then ``videoWorkerLoop``."""
     try:
         from models.video_model import warmUpLiveVideoModels
+        from workers.video.pipeline import processLiveVisionChunk  # validate imports early
 
         warmUpLiveVideoModels()
         if readiness_queue is not None:
@@ -31,10 +32,10 @@ def video_worker_startup(recv_conn: Any, readiness_queue: Any) -> None:
             readiness_queue.put({"module": "video", "ok": False, "error": str(e)})
         traceback.print_exc()
         return
-    videoWorkerLoop(recv_conn)
+    videoWorkerLoop(recv_conn, processLiveVisionChunk)
 
 
-def videoWorkerLoop(conn: Any) -> None:
+def videoWorkerLoop(conn: Any, processLiveVisionChunk: Any) -> None:
     """
     ``conn``: child (**recv**) end of ``Pipe(duplex=False)``.
 
@@ -42,8 +43,6 @@ def videoWorkerLoop(conn: Any) -> None:
         {\"type\": \"chunk\", \"meetingId\": uuid, \"offsetMs\": int, \"videoBytes\": bytes}
         {\"type\": \"shutdown\"}
     """
-    from workers.video.pipeline import processLiveVisionChunk
-
     while True:
         try:
             msg = conn.recv()
