@@ -1,8 +1,8 @@
 # meetai-ai-workers — merged from AudioWorker + gateway/worker deps
-torch>=2.1,<2.3
-torchaudio>=2.1,<2.3
+torch>=2.6.0
+torchaudio>=2.6.0
 numpy>=1.24
-soundfile>=0.12
+av>=12.0                    # PyAV: WebM/Opus decode (bundles FFmpeg libs, no system install)
 
 openai-whisper
 pyannote.audio==3.1.1
