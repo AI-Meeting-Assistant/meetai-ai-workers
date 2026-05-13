@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import bisect
 from collections import OrderedDict
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -13,6 +15,11 @@ from infrastructure.redis_client import RedisClient, get_redis_client
 from workers.audio.asr import transcribeWindowText
 from workers.audio.context_buffer import clearMeetingBuffers, getBuffer
 from workers.audio.io_audio import pcmMonoF32FromWebmBytes
+from workers.audio.webm_ebml_clusters import (
+    consume_complete_segment_children,
+    find_segment_scan_window,
+)
+from workers.audio.webm_ebml_prefix import webm_init_prefix_bytes
 from workers.audio.schemas import (
     AudioChunkPayload,
     TextHandoffMessage,
@@ -23,24 +30,67 @@ from utils.logger import get_logger
 
 log = get_logger(__name__)
 
-# Live MediaRecorder chunks are often non-standalone WebM; concatenate per meeting then decode.
+# Live MediaRecorder: concatenate WebM per meeting; decode new Cluster elements only (incremental PCM).
 _MAX_LIVE_WEBM_ACCUM_MEETINGS = 200
-_live_webm_accum_by_meeting: OrderedDict[str, bytearray] = OrderedDict()
+_live_webm_state_by_meeting: OrderedDict[str, "_LiveWebmMeetingState"] = OrderedDict()
+
+
+@dataclass
+class _LiveWebmMeetingState:
+    buf: bytearray = field(default_factory=bytearray)
+    init_prefix: bytes | None = None
+    incremental_mode: bool = False
+    next_parse_pos: int = 0
+    pcm_chunks: list[np.ndarray] = field(default_factory=list)
+    cum_lens: list[int] = field(default_factory=lambda: [0])
+    sample_rate: int = 0
 
 
 def clear_live_webm_accum(meeting_id: str) -> None:
-    """Drop concatenated WebM bytes for one meeting (e.g. stream ended)."""
-    _live_webm_accum_by_meeting.pop(meeting_id, None)
+    """Drop live WebM / incremental decode state for one meeting (e.g. stream ended)."""
+    _live_webm_state_by_meeting.pop(meeting_id, None)
 
 
 def clear_live_webm_accum_all() -> None:
-    _live_webm_accum_by_meeting.clear()
+    _live_webm_state_by_meeting.clear()
 
 
 def _touch_live_webm_accum_lru(meeting_id: str) -> None:
-    _live_webm_accum_by_meeting.move_to_end(meeting_id)
-    while len(_live_webm_accum_by_meeting) > _MAX_LIVE_WEBM_ACCUM_MEETINGS:
-        _live_webm_accum_by_meeting.popitem(last=False)
+    _live_webm_state_by_meeting.move_to_end(meeting_id)
+    while len(_live_webm_state_by_meeting) > _MAX_LIVE_WEBM_ACCUM_MEETINGS:
+        _live_webm_state_by_meeting.popitem(last=False)
+
+
+def _append_pcm_chunk(st: _LiveWebmMeetingState, arr: np.ndarray) -> None:
+    st.pcm_chunks.append(arr.astype(np.float32, copy=False))
+    st.cum_lens.append(st.cum_lens[-1] + int(arr.shape[0]))
+
+
+def _pcm_slice_from_chunks(st: _LiveWebmMeetingState, start_s: int, end_s: int) -> np.ndarray:
+    if start_s >= end_s or not st.pcm_chunks:
+        return np.zeros(0, dtype=np.float32)
+    cl = st.cum_lens
+    n = cl[-1]
+    start_s = max(0, min(start_s, n))
+    end_s = max(start_s, min(end_s, n))
+    if start_s >= end_s:
+        return np.zeros(0, dtype=np.float32)
+    i = bisect.bisect_right(cl, start_s) - 1
+    j = bisect.bisect_right(cl, end_s) - 1
+    parts: list[np.ndarray] = []
+    for k in range(i, j + 1):
+        cs, ce = cl[k], cl[k + 1]
+        a = start_s - cs
+        b = end_s - cs
+        a = max(0, a)
+        b = min(ce - cs, b)
+        if b > a:
+            parts.append(st.pcm_chunks[k][a:b])
+    if not parts:
+        return np.zeros(0, dtype=np.float32)
+    if len(parts) == 1:
+        return parts[0]
+    return np.concatenate(parts)
 
 
 def _append_and_decode_live_webm_pcm(
@@ -52,35 +102,129 @@ def _append_and_decode_live_webm_pcm(
     target_sr: int,
 ) -> tuple[Any, int]:
     """
-    Append this ingest blob to the meeting WebM buffer, decode the full buffer once,
-    return mono float32 PCM for ``[offset_ms, offset_ms + window_duration_ms)`` only.
+    Append WebM bytes, decode **new complete Cluster** elements only (after init prefix is known),
+    and return mono float32 PCM for ``[offset_ms, offset_ms + window_duration_ms)``.
+    Falls back to full-container decode until the first Segment-level Cluster is visible.
     """
     if offset_ms == 0:
-        buf = bytearray()
-        _live_webm_accum_by_meeting[meeting_id] = buf
+        st = _LiveWebmMeetingState()
+        _live_webm_state_by_meeting[meeting_id] = st
     else:
-        buf = _live_webm_accum_by_meeting.get(meeting_id)
-        if buf is None:
-            buf = bytearray()
-            _live_webm_accum_by_meeting[meeting_id] = buf
+        st = _live_webm_state_by_meeting.get(meeting_id)
+        if st is None:
+            st = _LiveWebmMeetingState()
+            _live_webm_state_by_meeting[meeting_id] = st
 
+    buf = st.buf
     before_len = len(buf)
+    snap_next = st.next_parse_pos
+    snap_inc = st.incremental_mode
+    snap_init = st.init_prefix
+    snap_chunk_n = len(st.pcm_chunks)
+    snap_cum = list(st.cum_lens)
+
     buf.extend(audio_webm_bytes)
     _touch_live_webm_accum_lru(meeting_id)
 
-    try:
-        full_pcm, sr = pcmMonoF32FromWebmBytes(bytes(buf), target_sr)
-    except Exception:
+    def _rollback() -> None:
         del buf[before_len:]
-        raise
+        st.next_parse_pos = snap_next
+        st.incremental_mode = snap_inc
+        st.init_prefix = snap_init
+        while len(st.pcm_chunks) > snap_chunk_n:
+            st.pcm_chunks.pop()
+        st.cum_lens = list(snap_cum)
 
-    start_s = int(offset_ms * sr / 1000.0)
-    end_s = int((offset_ms + window_duration_ms) * sr / 1000.0)
-    n = int(full_pcm.shape[0])
-    start_s = max(0, min(start_s, n))
-    end_s = max(start_s, min(end_s, n))
-    window_pcm = full_pcm[start_s:end_s].astype(np.float32, copy=False)
-    return window_pcm, sr
+    try:
+        raw = bytes(buf)
+        prefix = webm_init_prefix_bytes(raw)
+        seg = find_segment_scan_window(raw)
+
+        def _slice_full(full_pcm: np.ndarray, sr: int) -> tuple[np.ndarray, int]:
+            n = int(full_pcm.shape[0])
+            ss = int(offset_ms * sr / 1000.0)
+            es = int((offset_ms + window_duration_ms) * sr / 1000.0)
+            ss = max(0, min(ss, n))
+            es = max(ss, min(es, n))
+            return full_pcm[ss:es].astype(np.float32, copy=False), sr
+
+        if st.incremental_mode and st.init_prefix is not None:
+            if seg is None:
+                full_pcm, sr = pcmMonoF32FromWebmBytes(raw, target_sr)
+                if not st.sample_rate:
+                    st.sample_rate = sr
+                window, sr2 = _slice_full(full_pcm, sr)
+                return window, sr2
+
+            seg_body, seg_lim = seg
+            new_spans, next_p = consume_complete_segment_children(
+                raw,
+                seg_body=seg_body,
+                seg_lim=seg_lim,
+                parse_from=st.next_parse_pos,
+            )
+            for cs, ce in new_spans:
+                blob = st.init_prefix + raw[cs:ce]
+                pcm_c, sr = pcmMonoF32FromWebmBytes(blob, target_sr)
+                if st.sample_rate and sr != st.sample_rate:
+                    log.warning(
+                        "Sample rate changed mid-meeting; keeping first rate",
+                        meeting_id=meeting_id,
+                        first_sr=st.sample_rate,
+                        new_sr=sr,
+                    )
+                    sr = st.sample_rate
+                if not st.sample_rate:
+                    st.sample_rate = sr
+                _append_pcm_chunk(st, pcm_c)
+            st.next_parse_pos = next_p
+            sr_use = st.sample_rate or target_sr
+            ss = int(offset_ms * sr_use / 1000.0)
+            es = int((offset_ms + window_duration_ms) * sr_use / 1000.0)
+            window = _pcm_slice_from_chunks(st, ss, es)
+            if window.size == 0 and len(raw) > 0:
+                full_pcm, sr = pcmMonoF32FromWebmBytes(raw, target_sr)
+                if not st.sample_rate:
+                    st.sample_rate = sr
+                return _slice_full(full_pcm, sr)[0], sr
+            return window, sr_use
+
+        if not st.incremental_mode and prefix and seg:
+            if st.init_prefix is None:
+                st.init_prefix = prefix
+                st.next_parse_pos = len(prefix)
+                st.pcm_chunks.clear()
+                st.cum_lens = [0]
+            seg_body, seg_lim = seg
+            new_spans, next_p = consume_complete_segment_children(
+                raw,
+                seg_body=seg_body,
+                seg_lim=seg_lim,
+                parse_from=st.next_parse_pos,
+            )
+            for cs, ce in new_spans:
+                blob = st.init_prefix + raw[cs:ce]
+                pcm_c, sr = pcmMonoF32FromWebmBytes(blob, target_sr)
+                if not st.sample_rate:
+                    st.sample_rate = sr
+                _append_pcm_chunk(st, pcm_c)
+            st.next_parse_pos = next_p
+            if st.cum_lens[-1] > 0:
+                st.incremental_mode = True
+                sr_use = st.sample_rate
+                ss = int(offset_ms * sr_use / 1000.0)
+                es = int((offset_ms + window_duration_ms) * sr_use / 1000.0)
+                return _pcm_slice_from_chunks(st, ss, es), sr_use
+
+        full_pcm, sr = pcmMonoF32FromWebmBytes(raw, target_sr)
+        if not st.sample_rate:
+            st.sample_rate = sr
+        window, sr_out = _slice_full(full_pcm, sr)
+        return window, sr_out
+
+    except Exception:
+        _rollback()
+        raise
 
 
 try:
@@ -133,9 +277,11 @@ def processLiveChunk(
     """
     Process one ingest window (**WebM container bytes** recommended).
 
-    Live WebM is concatenated per ``meeting_id`` and decoded as one stream; PCM for
-    this window is sliced by ``offset_ms`` + ``media_chunk_duration_ms``. A new
-    stream at ``offset_ms == 0`` clears prior WebM bytes and rolling ASR context.
+    Live WebM is concatenated per ``meeting_id``. After the first Segment-level Cluster
+    is visible, **new Cluster elements only** are decoded (incremental); PCM for this
+    window is sliced from a running chunk list. Until then, the full buffer is decoded
+    once per chunk (bootstrap). ``offset_ms == 0`` clears prior WebM state and rolling
+    ASR context.
 
     Publishes JSON to Redis and optionally emits :class:`TextHandoffMessage`
     through ``text_pipe_send_end`` (writable ``multiprocessing.Connection``, one-way Pipe).
