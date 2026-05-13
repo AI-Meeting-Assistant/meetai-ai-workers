@@ -14,10 +14,18 @@ from typing import Tuple
 
 import numpy as np
 
+from workers.audio.webm_ebml_prefix import webm_init_prefix_bytes
+
 
 # ---------------------------------------------------------------------------
 # Public decoder — accepts WAV *and* WebM/Opus/OGG/MP4/etc.
 # ---------------------------------------------------------------------------
+
+
+def webm_init_prefix_before_first_cluster(data: bytes) -> bytes | None:
+    """Bytes before first Cluster (EBML-aware); for prepending to fragment-only WebM."""
+    return webm_init_prefix_bytes(data)
+
 
 def pcmMonoF32FromWebmBytes(data: bytes, target_sr: int) -> Tuple[np.ndarray, int]:
     """

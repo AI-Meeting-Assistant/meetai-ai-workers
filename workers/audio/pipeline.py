@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import Any
+
+import numpy as np
 
 from config import Settings, get_settings
 from infrastructure.redis_client import RedisClient, get_redis_client
 
 from workers.audio.asr import transcribeWindowText
-from workers.audio.context_buffer import getBuffer
+from workers.audio.context_buffer import clearMeetingBuffers, getBuffer
 from workers.audio.io_audio import pcmMonoF32FromWebmBytes
 from workers.audio.schemas import (
     AudioChunkPayload,
@@ -20,11 +23,80 @@ from utils.logger import get_logger
 
 log = get_logger(__name__)
 
+# Live MediaRecorder chunks are often non-standalone WebM; concatenate per meeting then decode.
+_MAX_LIVE_WEBM_ACCUM_MEETINGS = 200
+_live_webm_accum_by_meeting: OrderedDict[str, bytearray] = OrderedDict()
+
+
+def clear_live_webm_accum(meeting_id: str) -> None:
+    """Drop concatenated WebM bytes for one meeting (e.g. stream ended)."""
+    _live_webm_accum_by_meeting.pop(meeting_id, None)
+
+
+def clear_live_webm_accum_all() -> None:
+    _live_webm_accum_by_meeting.clear()
+
+
+def _touch_live_webm_accum_lru(meeting_id: str) -> None:
+    _live_webm_accum_by_meeting.move_to_end(meeting_id)
+    while len(_live_webm_accum_by_meeting) > _MAX_LIVE_WEBM_ACCUM_MEETINGS:
+        _live_webm_accum_by_meeting.popitem(last=False)
+
+
+def _append_and_decode_live_webm_pcm(
+    meeting_id: str,
+    offset_ms: int,
+    audio_webm_bytes: bytes,
+    *,
+    window_duration_ms: int,
+    target_sr: int,
+) -> tuple[Any, int]:
+    """
+    Append this ingest blob to the meeting WebM buffer, decode the full buffer once,
+    return mono float32 PCM for ``[offset_ms, offset_ms + window_duration_ms)`` only.
+    """
+    if offset_ms == 0:
+        buf = bytearray()
+        _live_webm_accum_by_meeting[meeting_id] = buf
+    else:
+        buf = _live_webm_accum_by_meeting.get(meeting_id)
+        if buf is None:
+            buf = bytearray()
+            _live_webm_accum_by_meeting[meeting_id] = buf
+
+    before_len = len(buf)
+    buf.extend(audio_webm_bytes)
+    _touch_live_webm_accum_lru(meeting_id)
+
+    try:
+        full_pcm, sr = pcmMonoF32FromWebmBytes(bytes(buf), target_sr)
+    except Exception:
+        del buf[before_len:]
+        raise
+
+    start_s = int(offset_ms * sr / 1000.0)
+    end_s = int((offset_ms + window_duration_ms) * sr / 1000.0)
+    n = int(full_pcm.shape[0])
+    start_s = max(0, min(start_s, n))
+    end_s = max(start_s, min(end_s, n))
+    window_pcm = full_pcm[start_s:end_s].astype(np.float32, copy=False)
+    return window_pcm, sr
+
+
 try:
     from core.fusion_publisher import channel_audio, publish_json
 except ImportError:
     channel_audio = None  # type: ignore[assignment]
     publish_json = None  # type: ignore[assignment]
+
+
+def _decode_failure_degraded_reason(exc: BaseException) -> str:
+    """Map decode-time exceptions to wire ``degradedReason`` (Redis :audio payload)."""
+    if isinstance(exc, ModuleNotFoundError) and getattr(exc, "name", "") == "av":
+        return "pyav_missing"
+    if type(exc).__module__ == "av.error" and type(exc).__name__ == "InvalidDataError":
+        return "decode_invalid_data"
+    return "decode_error"
 
 
 def _stubPayload(
@@ -61,6 +133,10 @@ def processLiveChunk(
     """
     Process one ingest window (**WebM container bytes** recommended).
 
+    Live WebM is concatenated per ``meeting_id`` and decoded as one stream; PCM for
+    this window is sliced by ``offset_ms`` + ``media_chunk_duration_ms``. A new
+    stream at ``offset_ms == 0`` clears prior WebM bytes and rolling ASR context.
+
     Publishes JSON to Redis and optionally emits :class:`TextHandoffMessage`
     through ``text_pipe_send_end`` (writable ``multiprocessing.Connection``, one-way Pipe).
     """
@@ -68,6 +144,9 @@ def processLiveChunk(
     r = redis_client or get_redis_client()
 
     log.debug("Processing audio chunk", meeting_id=meeting_id, offset_ms=offset_ms, size_bytes=len(audio_webm_bytes))
+
+    if offset_ms == 0:
+        clearMeetingBuffers(meeting_id)
 
     def publishPayload(p: AudioChunkPayload) -> None:
         if channel_audio is None or publish_json is None:
@@ -84,10 +163,17 @@ def processLiveChunk(
         text_pipe_send_end.send(hm.model_dump(mode="json", by_alias=True))
 
     try:
-        pcm, sr = pcmMonoF32FromWebmBytes(audio_webm_bytes, settings.target_sample_rate)
-    except Exception:
+        pcm, sr = _append_and_decode_live_webm_pcm(
+            meeting_id,
+            offset_ms,
+            audio_webm_bytes,
+            window_duration_ms=settings.media_chunk_duration_ms,
+            target_sr=settings.target_sample_rate,
+        )
+    except Exception as e:
+        degraded = _decode_failure_degraded_reason(e)
         log.error("Failed to decode audio bytes", meeting_id=meeting_id, offset_ms=offset_ms, exc_info=True)
-        p = _stubPayload(meeting_id=meeting_id, offset_ms=offset_ms, reason="decode_error")
+        p = _stubPayload(meeting_id=meeting_id, offset_ms=offset_ms, reason=degraded)
         publishPayload(p)
         sendHandoff(None)
         return p
