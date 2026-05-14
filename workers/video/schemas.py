@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, List
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class PersonVisionResult(BaseModel):
+    """Per-person aggregated results for one video chunk."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    person_id: int = Field(alias="personId")
+    focus_score: float | None = Field(None, alias="focusScore")
+    speaking_ratio: float | None = Field(None, alias="speakingRatio")
+    frame_count: int | None = Field(None, alias="frameCount")
 
 
 class VisionChunkPayload(BaseModel):
@@ -14,7 +25,9 @@ class VisionChunkPayload(BaseModel):
 
     meeting_id: str = Field(alias="meetingId")
     offset_ms: int = Field(alias="offsetMs")
+    # Scalar focus kept for backward compat; mean of per-person scores when available.
     focus_score: float | None = Field(None, alias="focusScore")
+    persons: List[PersonVisionResult] = Field(default_factory=list)
     payload: dict[str, Any] | None = None
 
 

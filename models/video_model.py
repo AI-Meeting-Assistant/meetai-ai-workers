@@ -1,5 +1,16 @@
-"""Warm-up hooks for vision worker models (stub in Phase 3)."""
+"""Warm-up hooks for vision worker models."""
+
+from utils.logger import get_logger
+
+log = get_logger(__name__)
 
 
 def warmUpLiveVideoModels() -> None:
-    """Reserve for future ONNX / vision model load — no-op for stub pipeline."""
+    """Load MediaPipe Face Mesh singleton so the first ingest frame isn't slow."""
+    try:
+        from workers.video.face_mesh import _getFaceMesh
+        _getFaceMesh()
+        log.info("MediaPipe Face Mesh warmed up")
+    except Exception as exc:
+        log.error("MediaPipe warm-up failed", error=str(exc))
+        raise

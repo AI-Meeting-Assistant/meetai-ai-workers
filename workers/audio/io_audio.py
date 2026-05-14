@@ -10,27 +10,31 @@ from __future__ import annotations
 
 import math
 from io import BytesIO
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 
-from workers.audio.webm_ebml_prefix import webm_init_prefix_bytes
+from utils.webm_init_cache import prepareWebmChunk
 
 
 # ---------------------------------------------------------------------------
 # Public decoder — accepts WAV *and* WebM/Opus/OGG/MP4/etc.
 # ---------------------------------------------------------------------------
 
-
-def webm_init_prefix_before_first_cluster(data: bytes) -> bytes | None:
-    """Bytes before first Cluster (EBML-aware); for prepending to fragment-only WebM."""
-    return webm_init_prefix_bytes(data)
-
-
-def pcmMonoF32FromWebmBytes(data: bytes, target_sr: int) -> Tuple[np.ndarray, int]:
+def pcmMonoF32FromWebmBytes(
+    data: bytes,
+    target_sr: int,
+    meeting_id: Optional[str] = None,
+) -> Tuple[np.ndarray, int]:
     """
     Decode WebM audio bytes to mono float32 PCM at ``target_sr``.
+
+    Pass ``meeting_id`` when decoding browser MediaRecorder chunks so that
+    WebM continuation fragments (chunks 2, 3, … which lack the EBML header)
+    are automatically patched with the cached init segment.
     """
+    if meeting_id is not None:
+        data = prepareWebmChunk(meeting_id, data)
     return _decodeViaAv(data, target_sr)
 
 

@@ -29,6 +29,7 @@ class _WhisperEngine:
         import whisper
         import torch
 
+        # Whisper uses float64 ops incompatible with MPS; CUDA only, else CPU.
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self._model = whisper.load_model(model_size, device=device)
         self._language = language

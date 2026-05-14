@@ -309,22 +309,17 @@ def processLiveChunk(
         text_pipe_send_end.send(hm.model_dump(mode="json", by_alias=True))
 
     try:
-        pcm, sr = _append_and_decode_live_webm_pcm(
-            meeting_id,
-            offset_ms,
-            audio_webm_bytes,
-            window_duration_ms=settings.media_chunk_duration_ms,
-            target_sr=settings.target_sample_rate,
-        )
-    except Exception as e:
-        degraded = _decode_failure_degraded_reason(e)
+        pcm, sr = pcmMonoF32FromWebmBytes(audio_webm_bytes, settings.target_sample_rate, meeting_id=meeting_id)
+    except Exception:
         log.error("Failed to decode audio bytes", meeting_id=meeting_id, offset_ms=offset_ms, exc_info=True)
         p = _stubPayload(meeting_id=meeting_id, offset_ms=offset_ms, reason=degraded)
         publishPayload(p)
         sendHandoff(None)
         return p
 
-    window_end_ms = offset_ms + settings.media_chunk_duration_ms
+    # Derive window duration from actual decoded PCM length, not from config.
+    chunk_duration_ms = int(len(pcm) / sr * 1000) if sr > 0 else settings.media_chunk_duration_ms
+    window_end_ms = offset_ms + chunk_duration_ms
 
     vad_metrics = None
     if settings.run_live_vad_energy:
@@ -363,7 +358,7 @@ def processLiveChunk(
     if settings.run_live_diarization_stub:
         from workers.audio.diarization import streamingWindowStub  # lazy: avoids pyannote at module load
         labels = streamingWindowStub(
-            meeting_id, offset_ms=offset_ms, duration_ms=settings.media_chunk_duration_ms
+            meeting_id, offset_ms=offset_ms, duration_ms=chunk_duration_ms
         )
 
     payload = AudioChunkPayload(
