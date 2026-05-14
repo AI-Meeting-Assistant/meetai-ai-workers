@@ -1,9 +1,12 @@
-"""Cross-chunk stable person ID assignment via centroid matching.
+"""Cross-chunk stable person ID assignment via centroid matching with ghost memory.
 
 Each worker process keeps a per-meeting MeetingTracker. On every chunk,
-new face bboxes are matched to the previous chunk's centroids by nearest
-Euclidean distance. Faces that match an existing centroid keep its stable_id;
-unmatched faces get a new one.
+new face bboxes are matched to stored centroids by nearest Euclidean distance.
+Faces that match keep their stable_id; unmatched faces get a new one.
+
+Ghost memory: when a face disappears (e.g. head turn causing missed detection),
+its centroid is retained for _GHOST_CHUNKS chunks before being discarded.
+This prevents a briefly-lost face from getting a new ID when it reappears.
 """
 
 from __future__ import annotations
@@ -11,19 +14,30 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
+import time
+
 import numpy as np
 
 # Maximum pixel distance to consider two centroids the same person.
-# At 640px width a grid cell is ~150-200px wide; 120px covers same-cell drift.
-_MAX_MATCH_DISTANCE = 120.0
+_MAX_MATCH_DISTANCE = 200.0
+
+# How long (seconds) to keep a face centroid alive after it disappears.
+# Handles temporary camera-off, head turns, or brief occlusions.
+_GHOST_SECONDS = 30.0
 
 # process-local tracker registry
 _trackers: Dict[str, "MeetingTracker"] = {}
 
 
 @dataclass
+class _TrackedFace:
+    centroid: Tuple[float, float]
+    last_seen_ts: float = field(default_factory=time.monotonic)
+
+
+@dataclass
 class MeetingTracker:
-    centroids: Dict[int, Tuple[float, float]] = field(default_factory=dict)  # stable_id → (cx, cy)
+    faces: Dict[int, _TrackedFace] = field(default_factory=dict)  # stable_id → face
     next_id: int = 0
 
 
@@ -48,55 +62,65 @@ def assignStableIds(
 
     Algorithm:
       1. Compute centroid for each incoming bbox.
-      2. Greedily match each centroid to the nearest stored centroid within
-         _MAX_MATCH_DISTANCE (closest-first to avoid double assignment).
+      2. Greedily match to nearest stored centroid within _MAX_MATCH_DISTANCE.
       3. Unmatched → new stable_id.
-      4. Update stored centroids with this chunk's positions.
+      4. Update centroids for matched faces; ghost faces not seen this chunk
+         are kept for _GHOST_CHUNKS more chunks before eviction.
     """
     tracker = getTracker(meeting_id)
+    now = time.monotonic()
     new_centroids = [_centroid(b) for b in bboxes]
 
-    if not tracker.centroids:
-        # First chunk for this meeting — assign sequential IDs
-        ids = list(range(len(bboxes)))
-        tracker.next_id = len(bboxes)
-        tracker.centroids = {i: c for i, c in zip(ids, new_centroids)}
+    if not tracker.faces:
+        ids = []
+        for c in new_centroids:
+            new_id = tracker.next_id
+            tracker.next_id += 1
+            tracker.faces[new_id] = _TrackedFace(centroid=c, last_seen_ts=now)
+            ids.append(new_id)
         return ids
 
-    stored_ids = list(tracker.centroids.keys())
-    stored_pts = np.array([tracker.centroids[i] for i in stored_ids], dtype=np.float32)
-    new_pts = np.array(new_centroids, dtype=np.float32)
-
-    # Pairwise distances: shape (n_new, n_stored)
-    diffs = new_pts[:, None, :] - stored_pts[None, :, :]   # (N, M, 2)
-    dists = np.sqrt((diffs ** 2).sum(axis=2))               # (N, M)
+    stored_ids = list(tracker.faces.keys())
+    stored_pts = np.array([tracker.faces[i].centroid for i in stored_ids], dtype=np.float32)
 
     assigned_ids: List[int] = [-1] * len(bboxes)
-    used_stored: set[int] = set()
-    used_new: set[int] = set()
 
-    # Sort all (new_i, stored_j) pairs by distance, match greedily
-    pairs = sorted(
-        ((dists[ni, si], ni, si) for ni in range(len(bboxes)) for si in range(len(stored_ids))),
-        key=lambda x: x[0],
-    )
-    for dist, ni, si in pairs:
-        if dist > _MAX_MATCH_DISTANCE:
-            break
-        if ni in used_new or si in used_stored:
-            continue
-        assigned_ids[ni] = stored_ids[si]
-        used_new.add(ni)
-        used_stored.add(si)
+    if new_centroids:
+        new_pts = np.array(new_centroids, dtype=np.float32)
+        diffs = new_pts[:, None, :] - stored_pts[None, :, :]
+        dists = np.sqrt((diffs ** 2).sum(axis=2))
+
+        used_stored: set[int] = set()
+        used_new: set[int] = set()
+
+        pairs = sorted(
+            ((dists[ni, si], ni, si) for ni in range(len(bboxes)) for si in range(len(stored_ids))),
+            key=lambda x: x[0],
+        )
+        for dist, ni, si in pairs:
+            if dist > _MAX_MATCH_DISTANCE:
+                break
+            if ni in used_new or si in used_stored:
+                continue
+            sid = stored_ids[si]
+            assigned_ids[ni] = sid
+            tracker.faces[sid].centroid = new_centroids[ni]
+            tracker.faces[sid].last_seen_ts = now
+            used_new.add(ni)
+            used_stored.add(si)
 
     # Unmatched new faces → fresh IDs
     for ni in range(len(bboxes)):
         if assigned_ids[ni] == -1:
-            assigned_ids[ni] = tracker.next_id
+            new_id = tracker.next_id
             tracker.next_id += 1
+            tracker.faces[new_id] = _TrackedFace(centroid=new_centroids[ni], last_seen_ts=now)
+            assigned_ids[ni] = new_id
 
-    # Update stored centroids with current positions
-    tracker.centroids = {assigned_ids[ni]: new_centroids[ni] for ni in range(len(bboxes))}
+    # Evict ghost faces not seen within _GHOST_SECONDS
+    stale = [sid for sid, f in tracker.faces.items() if now - f.last_seen_ts > _GHOST_SECONDS]
+    for sid in stale:
+        del tracker.faces[sid]
 
     return assigned_ids
 

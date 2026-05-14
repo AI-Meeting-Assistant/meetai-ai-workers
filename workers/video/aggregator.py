@@ -25,18 +25,17 @@ _MAR_SPEAKING_THRESHOLD = 0.06
 # Smoothing window for speaking_ratio (frames)
 _SPEAKING_SMOOTH_WINDOW = 8
 
-# Weights for focus_score: gaze vs head pose
-_GAZE_WEIGHT = 0.5
-_POSE_WEIGHT = 0.5
+# Gaze is iris-relative-to-eye — doesn't change with head turns, only with eye movement.
+# So pose is the primary attention signal; gaze is a minor supplement.
+_GAZE_WEIGHT = 0.2
+_POSE_WEIGHT = 0.8
 
-# Gaze: natural iris offset when looking at screen (~0.15 due to camera/screen misalignment).
-# Offsets within the dead zone score 1.0; penalty starts only beyond it.
-_GAZE_DEAD_ZONE = 0.15
+# Gaze dead zone: iris naturally offset ~0.1 due to camera/screen geometry.
+_GAZE_DEAD_ZONE = 0.2
 
-# Head pose: wider tolerances account for solvePnP error from approximate intrinsics.
-# Penalty starts only beyond these angles.
-_YAW_TOLERANCE_DEG   = 45.0
-_PITCH_TOLERANCE_DEG = 35.0
+# Head pose tolerances: tighter so head turns register as inattention.
+_YAW_TOLERANCE_DEG   = 25.0
+_PITCH_TOLERANCE_DEG = 20.0
 
 
 @dataclass
@@ -118,11 +117,17 @@ def _focusScore(
     effective_gaze = max(0.0, gaze_offset - _GAZE_DEAD_ZONE)
     gaze_score = float(np.clip(1.0 - effective_gaze / (1.0 - _GAZE_DEAD_ZONE), 0.0, 1.0))
 
-    _POSE_DEAD_ZONE = 5.0
-    yaw_excess   = np.maximum(0.0, np.abs(yaw)   - _POSE_DEAD_ZONE)
-    pitch_excess = np.maximum(0.0, np.abs(pitch) - _POSE_DEAD_ZONE)
-    yaw_penalty   = np.mean(np.clip(yaw_excess   / (_YAW_TOLERANCE_DEG   - _POSE_DEAD_ZONE), 0.0, 1.0))
-    pitch_penalty = np.mean(np.clip(pitch_excess / (_PITCH_TOLERANCE_DEG - _POSE_DEAD_ZONE), 0.0, 1.0))
+    # Laptop camera sits above the screen: natural downward gaze produces pitch ~-15°.
+    # Shift pitch by this offset before penalising so normal screen-viewing scores well.
+    _PITCH_NATURAL_OFFSET = -15.0
+    _YAW_DEAD_ZONE   = 5.0
+    _PITCH_DEAD_ZONE = 5.0
+
+    yaw_excess   = np.maximum(0.0, np.abs(yaw) - _YAW_DEAD_ZONE)
+    pitch_excess = np.maximum(0.0, np.abs(pitch - _PITCH_NATURAL_OFFSET) - _PITCH_DEAD_ZONE)
+
+    yaw_penalty   = np.mean(np.clip(yaw_excess   / (_YAW_TOLERANCE_DEG   - _YAW_DEAD_ZONE),   0.0, 1.0))
+    pitch_penalty = np.mean(np.clip(pitch_excess / (_PITCH_TOLERANCE_DEG - _PITCH_DEAD_ZONE), 0.0, 1.0))
     pose_score = float(np.clip(1.0 - (yaw_penalty + pitch_penalty) / 2.0, 0.0, 1.0))
 
     return float(np.clip(

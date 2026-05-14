@@ -225,11 +225,20 @@ def _computeHeadPose(
     # Rodrigues → rotation matrix
     rmat, _ = cv2.Rodrigues(rvec)
 
-    # Euler angles from ZYX decomposition (pitch = rx, yaw = ry, roll = rz)
-    # Using atan2 on the rotation matrix rows
+    # solvePnP has a flip ambiguity: rmat[2,2] < 0 means the face normal points
+    # away from the camera (back-of-head solution). Flip 180° around x-axis to correct.
+    if rmat[2, 2] < 0:
+        flip = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]], dtype=np.float64)
+        rmat = flip @ rmat
+
+    # Euler angles from ZYX decomposition
     pitch_rad = np.arctan2(-rmat[2, 0], np.sqrt(rmat[0, 0] ** 2 + rmat[1, 0] ** 2))
-    yaw_rad   = np.arctan2(rmat[1, 0] / np.cos(pitch_rad), rmat[0, 0] / np.cos(pitch_rad))
-    roll_rad  = np.arctan2(rmat[2, 1] / np.cos(pitch_rad), rmat[2, 2] / np.cos(pitch_rad))
+    cos_pitch = np.cos(pitch_rad)
+    if abs(cos_pitch) < 1e-6:
+        yaw_rad, roll_rad = 0.0, np.arctan2(-rmat[0, 1], rmat[1, 1])
+    else:
+        yaw_rad  = np.arctan2(rmat[1, 0] / cos_pitch, rmat[0, 0] / cos_pitch)
+        roll_rad = np.arctan2(rmat[2, 1] / cos_pitch, rmat[2, 2] / cos_pitch)
 
     return (
         float(np.degrees(yaw_rad)),

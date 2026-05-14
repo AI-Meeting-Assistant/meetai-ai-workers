@@ -13,7 +13,6 @@ from workers.video.aggregator import PersonAggregate, aggregateChunk
 from workers.video.face_mesh import FaceFeatures, analyzeFaces
 from workers.video.io_video import framesFromVideoBytes
 from workers.video.schemas import PersonVisionResult, VisionChunkPayload, visionPayloadToRedisDict
-from workers.video.tracker import assignStableIds
 
 log = get_logger(__name__)
 
@@ -100,7 +99,8 @@ def _buildPayload(
         return _stubPayload(meeting_id, offset_ms, reason="no_faces")
 
     persons = [_toPersonResult(a) for a in aggregates]
-    mean_focus = float(sum(p.focus_score or 0.0 for p in persons) / len(persons))
+    total_frames = sum(p.frame_count or 1 for p in persons)
+    mean_focus = float(sum((p.focus_score or 0.0) * (p.frame_count or 1) for p in persons) / total_frames)
 
     log.info(
         "Vision analysis complete",
@@ -127,8 +127,8 @@ def _decodeFrames(video_bytes: bytes):
         return []
 
 
-_FRAME_STRIDE = 3       # process every Nth frame — 90 → 30 frames per 6s chunk
-_MAX_FRAME_WIDTH = 640  # resize before MediaPipe — 1620→640 is ~6x faster per frame
+_FRAME_STRIDE = 1       # process every frame
+_MAX_FRAME_WIDTH = 1106  # keep original resolution — better detection on small Meet tiles
 
 
 def _analyzeFrames(frames, meeting_id: str) -> List[List[FaceFeatures]]:
@@ -143,12 +143,9 @@ def _analyzeFrames(frames, meeting_id: str) -> List[List[FaceFeatures]]:
                 scale = _MAX_FRAME_WIDTH / w
                 frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
             faces = analyzeFaces(frame)
-            if faces:
-                stable_ids = assignStableIds(meeting_id, [f.bbox for f in faces])
-                for face, sid in zip(faces, stable_ids):
-                    face.person_idx = sid
             results.append(faces)
         except Exception:
+            log.warning("Frame analysis error", meeting_id=meeting_id, frame_idx=i, exc_info=True)
             results.append([])
     return results
 
