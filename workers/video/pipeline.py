@@ -13,6 +13,7 @@ from workers.video.aggregator import PersonAggregate, aggregateChunk
 from workers.video.face_mesh import FaceFeatures, analyzeFaces
 from workers.video.io_video import framesFromVideoBytes
 from workers.video.schemas import PersonVisionResult, VisionChunkPayload, visionPayloadToRedisDict
+from workers.video.tracker import assignStableIds
 
 log = get_logger(__name__)
 
@@ -83,7 +84,7 @@ def _buildPayload(
         frame_size=f"{w}x{h}",
     )
 
-    frame_results = _analyzeFrames(frames)
+    frame_results = _analyzeFrames(frames, meeting_id)
     faces_per_frame = [len(f) for f in frame_results]
     log.debug(
         "Face detection done",
@@ -130,19 +131,23 @@ _FRAME_STRIDE = 3       # process every Nth frame — 90 → 30 frames per 6s ch
 _MAX_FRAME_WIDTH = 640  # resize before MediaPipe — 1620→640 is ~6x faster per frame
 
 
-def _analyzeFrames(frames) -> List[List[FaceFeatures]]:
+def _analyzeFrames(frames, meeting_id: str) -> List[List[FaceFeatures]]:
     import cv2
     results: List[List[FaceFeatures]] = []
     for i, frame in enumerate(frames):
         if i % _FRAME_STRIDE != 0:
             continue
         try:
-            # Downscale: MediaPipe accuracy is fine at 640px width
             h, w = frame.shape[:2]
             if w > _MAX_FRAME_WIDTH:
                 scale = _MAX_FRAME_WIDTH / w
                 frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
-            results.append(analyzeFaces(frame))
+            faces = analyzeFaces(frame)
+            if faces:
+                stable_ids = assignStableIds(meeting_id, [f.bbox for f in faces])
+                for face, sid in zip(faces, stable_ids):
+                    face.person_idx = sid
+            results.append(faces)
         except Exception:
             results.append([])
     return results
