@@ -44,6 +44,7 @@ class Settings:
     run_live_asr: bool
     run_live_diarization_stub: bool
     vad_energy_rms_quantile_for_speech: float
+    vad_speech_ratio_min_for_asr: float
 
     @staticmethod
     def load() -> "Settings":
@@ -68,6 +69,7 @@ class Settings:
             run_live_diarization_stub=os.getenv("RUN_LIVE_DIARIZATION_STUB", "1")
             not in ("0", "false", "False"),
             vad_energy_rms_quantile_for_speech=_float_env("VAD_ENERGY_RMS_QUANTILE", 0.35),
+            vad_speech_ratio_min_for_asr=_float_env("VAD_SPEECH_RATIO_MIN_ASR", 10.0),
         )
 
 

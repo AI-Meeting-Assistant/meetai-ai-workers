@@ -337,8 +337,14 @@ def processLiveChunk(
     buf.appendChunk(offset_ms, pcm)
     ctx_pcm, abs_context_start_ms = buf.buildConcatenated()
 
+    # Skip ASR if VAD ran and speech ratio is below threshold — prevents Whisper hallucinations on silence.
+    _skip_asr = (
+        vad_metrics is not None
+        and vad_metrics.speech_ratio_percent < settings.vad_speech_ratio_min_for_asr
+    )
+
     transcript_val: str | None = None
-    if settings.run_live_asr:
+    if settings.run_live_asr and not _skip_asr:
         try:
             transcript_val = transcribeWindowText(
                 context_pcm=ctx_pcm,
@@ -353,6 +359,14 @@ def processLiveChunk(
         except Exception:
             log.error("Whisper transcription failed", meeting_id=meeting_id, offset_ms=offset_ms, exc_info=True)
             transcript_val = None
+    elif _skip_asr:
+        log.debug(
+            "ASR skipped: speech ratio below threshold",
+            meeting_id=meeting_id,
+            offset_ms=offset_ms,
+            speech_ratio=round(vad_metrics.speech_ratio_percent, 1),
+            threshold=settings.vad_speech_ratio_min_for_asr,
+        )
 
     labels = None
     if settings.run_live_diarization_stub:
