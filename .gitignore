@@ -80,3 +80,6 @@ temp/
 # --- Linters / type checkers ---
 .mypy_cache/
 .ruff_cache/
+
+# --- Local Claude context (not for sharing) ---
+CLAUDE.md
