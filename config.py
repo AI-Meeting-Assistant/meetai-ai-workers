@@ -44,6 +44,8 @@ class Settings:
     run_live_asr: bool
     run_live_diarization_stub: bool
     vad_energy_rms_quantile_for_speech: float
+    """Deprecated for live path (quantile pinned ~65% speech); kept for env compat."""
+    vad_speech_rms_threshold: float
     vad_speech_ratio_min_asr: float
 
     #: ECAPA embedding + canonical Speaker 1…N assignment (live)
@@ -79,6 +81,7 @@ class Settings:
             run_live_diarization_stub=os.getenv("RUN_LIVE_DIARIZATION_STUB", "1")
             not in ("0", "false", "False"),
             vad_energy_rms_quantile_for_speech=_float_env("VAD_ENERGY_RMS_QUANTILE", 0.35),
+            vad_speech_rms_threshold=_float_env("VAD_SPEECH_RMS_THRESHOLD", 0.022),
             vad_speech_ratio_min_asr=_float_env("VAD_SPEECH_RATIO_MIN_ASR", 10.0),
             run_live_speaker_id=os.getenv("RUN_LIVE_SPEAKER_ID", "1") not in ("0", "false", "False"),
             speaker_max_canonical=max(2, min(8, _int_env("SPEAKER_MAX_CANONICAL", 8))),

@@ -41,7 +41,7 @@ from workers.audio.vad_segments import (
     mergeAdjacentSpeechSegmentRanges,
     vadSpeechSegmentSampleRanges,
 )
-from workers.audio.vad_window import computeEnergyVadMetrics
+from workers.audio.vad_window import computeWindowVadMetrics
 from utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -419,10 +419,10 @@ def processLiveChunk(
 
     vad_metrics = None
     if settings.run_live_vad_energy:
-        vad_metrics = computeEnergyVadMetrics(
+        vad_metrics = computeWindowVadMetrics(
             pcm,
             sample_rate=sr,
-            speech_energy_quantile=settings.vad_energy_rms_quantile_for_speech,
+            speech_rms_threshold=settings.vad_speech_rms_threshold,
         )
 
     # Skip ASR if VAD ran and speech ratio is below threshold — prevents Whisper hallucinations on silence.
@@ -472,7 +472,7 @@ def processLiveChunk(
             segs = vadSpeechSegmentSampleRanges(
                 pcm,
                 sample_rate=sr,
-                speech_energy_quantile=settings.vad_energy_rms_quantile_for_speech,
+                speech_rms_threshold=settings.vad_speech_rms_threshold,
             )
             gap_merge_samples = max(1, int(sr * 0.35))  # bridge short pauses within one utterance
             segs = mergeAdjacentSpeechSegmentRanges(segs, max_gap_samples=gap_merge_samples)

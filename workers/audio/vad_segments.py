@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from workers.audio.vad_window import speech_rms_threshold_for_frames
+
 # Mirrors workers.audio.vad_window thresholds so behavior stays consistent.
 _ABS_SPEECH_RMS_FLOOR = 0.01
 
@@ -13,12 +15,16 @@ def vadSpeechSegmentSampleRanges(
     *,
     sample_rate: int,
     frame_ms: float = 20.0,
-    speech_energy_quantile: float = 0.35,
+    speech_rms_threshold: float = 0.022,
+    speech_energy_quantile: float | None = None,
 ) -> list[tuple[int, int]]:
     """
     Returns inclusive-exclusive sample intervals ``[(start_sample, end_sample), ...]``
     classified as speech, merged contiguously.
+
+    ``speech_energy_quantile`` is deprecated (quantile VAD pinned ~65% speech); ignored.
     """
+    _ = speech_energy_quantile
     if pcm_mono_f32.size == 0 or sample_rate <= 0:
         return []
     pcm = pcm_mono_f32.astype(np.float32, copy=False)
@@ -30,7 +36,7 @@ def vadSpeechSegmentSampleRanges(
         rms_vals.append(float(np.sqrt(np.mean(np.square(chunk), dtype=np.float64))))
     if not rms_vals:
         return []
-    thresh = float(np.quantile(np.array(rms_vals), speech_energy_quantile))
+    thresh = speech_rms_threshold_for_frames(rms_vals, abs_rms=speech_rms_threshold)
     is_speech = [r >= thresh and r >= _ABS_SPEECH_RMS_FLOOR for r in rms_vals]
 
     ranges: list[tuple[int, int]] = []
