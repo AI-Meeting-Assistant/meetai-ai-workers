@@ -11,3 +11,5 @@ def warmUpLiveAudioModels() -> None:
     s = get_settings()
     if s.run_live_asr:
         warmupWhisper(model_size=s.whisper_model_size, language=s.whisper_language)
+    # SpeechBrain ECAPA stays lazy (`embedPcmMono` first call) — preloading here can exceed gateway
+    # worker readiness deadline (HF download + model compile).

@@ -1,7 +1,7 @@
 # meetai-ai-workers — merged from AudioWorker + gateway/worker deps
 torch>=2.6.0
 torchaudio>=2.6.0
-numpy>=1.24
+numpy>=1.24,<2  # torch/whisper wheels on Windows still expect NumPy 1.x ABI
 av>=12.0                    # PyAV: WebM/Opus decode (bundles FFmpeg libs, no system install)
 
 openai-whisper
@@ -14,6 +14,7 @@ accelerate>=0.27
 sentencepiece>=0.1.99
 huggingface-hub>=1.0
 
+# Newer mediapipe wheels (e.g. 0.10.35) omit ``mp.solutions``; Face Mesh needs a build that still ships it.
 mediapipe==0.10.14
 opencv-python>=4.9
 

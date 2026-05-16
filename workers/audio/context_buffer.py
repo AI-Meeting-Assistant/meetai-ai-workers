@@ -84,11 +84,13 @@ def getBuffer(
 def clearMeetingBuffers(meeting_id: str | None = None) -> None:
     if meeting_id is None:
         _MEETING_BUFFERS.clear()
-        from workers.audio.pipeline import clear_live_webm_accum_all
+        from workers.audio.pipeline import clearSpeakerAnalysisArtifacts, clear_live_webm_accum_all
 
         clear_live_webm_accum_all()
+        clearSpeakerAnalysisArtifacts(None)
         return
     _MEETING_BUFFERS.pop(meeting_id, None)
-    from workers.audio.pipeline import clear_live_webm_accum
+    from workers.audio.pipeline import clearSpeakerAnalysisArtifacts, clear_live_webm_accum
 
     clear_live_webm_accum(meeting_id)
+    clearSpeakerAnalysisArtifacts(meeting_id)

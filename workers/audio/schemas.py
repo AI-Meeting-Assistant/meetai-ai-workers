@@ -7,6 +7,13 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class TranscriptLine(BaseModel):
+    """One live ASR fragment aligned to a canonical speaker."""
+
+    speaker: str
+    text: str
+
+
 class AudioChunkPayload(BaseModel):
     """JSON published to ``meeting:{meetingId}:audio``."""
 
@@ -15,9 +22,14 @@ class AudioChunkPayload(BaseModel):
     meeting_id: str = Field(alias="meetingId")
     offset_ms: int = Field(alias="offsetMs")
     transcript: str | None = None
+    transcript_lines: list[TranscriptLine] | None = Field(None, alias="transcriptLines")
     vad_speech_ms: float | None = Field(None, alias="vadSpeechMs")
     vad_silence_ms: float | None = Field(None, alias="vadSilenceMs")
     vad_speech_ratio_percent: float | None = Field(None, alias="vadSpeechRatioPercent")
+    speaker_talk_ms: dict[str, float] | None = Field(None, alias="speakerTalkMs")
+    speaker_talk_ratio_percent: dict[str, float] | None = Field(
+        None, alias="speakerTalkRatioPercent"
+    )
     speaker_labels_window: list[dict[str, Any]] | None = Field(None, alias="speakerLabelsWindow")
     focus_score: float | None = Field(None, alias="focusScore")
     payload: dict[str, Any] | None = None

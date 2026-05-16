@@ -54,6 +54,9 @@ class _WhisperEngine:
             language=self._language,
             word_timestamps=True,
             fp16=False,
+            no_speech_threshold=0.6,
+            compression_ratio_threshold=2.4,
+            logprob_threshold=-1.0,
         )
 
 
@@ -67,6 +70,58 @@ def getWhisperEngine(*, model_size: str, language: str) -> _WhisperEngine:
 def warmupWhisper(*, model_size: str, language: str) -> None:
     """Load model once (health check / startup)."""
     getWhisperEngine(model_size=model_size, language=language)
+
+
+def transcribeWindowTextAndWords(
+    *,
+    context_pcm: np.ndarray,
+    sample_rate: int,
+    abs_context_start_ms: int,
+    window_start_ms: int,
+    window_end_ms: int,
+    model_size: str,
+    language: str,
+) -> Tuple[str, List[Tuple[int, int, str]]]:
+    """
+    Single Whisper decode; clipped **meeting-ms** transcript + words for
+    ``[window_start_ms, window_end_ms)``.
+    """
+    if context_pcm.size == 0:
+        return "", []
+    eng = getWhisperEngine(model_size=model_size, language=language)
+    result = eng.transcribeContext(context_pcm, sample_rate=sample_rate)
+    words_out: List[Tuple[int, int, str]] = []
+    ws, we = window_start_ms, window_end_ms
+    for seg in result.get("segments", []):
+        for w in seg.get("words") or []:
+            wt0 = abs_context_start_ms + int(float(w["start"]) * 1000)
+            wt1 = abs_context_start_ms + int(float(w["end"]) * 1000)
+            if wt1 <= ws or wt0 >= we:
+                continue
+            wt = str(w.get("word", "")).strip()
+            if wt:
+                words_out.append((wt0, wt1, wt))
+    text_j = joinWordsToText(words_out)
+    return text_j, words_out
+
+
+def joinWordsToText(words: List[Tuple[int, int, str]]) -> str:
+    """Plain transcript for a window — word-timestamp clips only (no segment bleed)."""
+    return " ".join(token for _, _, token in words if token.strip()).strip()
+
+
+_FILLER_TOKENS = frozenset({"eee", "ee", "eh", "ıı", "ii", "aa", "ah", "um", "uh", "mmm", "hm"})
+
+
+def filterFillerWords(words: List[Tuple[int, int, str]]) -> List[Tuple[int, int, str]]:
+    """Drop common Whisper hallucinations on tab-capture / low-SNR audio."""
+    out: List[Tuple[int, int, str]] = []
+    for t0, t1, token in words:
+        norm = token.strip().lower().strip(".,!?…")
+        if len(norm) <= 4 and norm in _FILLER_TOKENS:
+            continue
+        out.append((t0, t1, token))
+    return out
 
 
 def transcribeWindowText(
@@ -83,23 +138,16 @@ def transcribeWindowText(
     Run Whisper on ``context_pcm``; keep tokens/segments overlapping
     ``[window_start_ms, window_end_ms)`` in **meeting** coordinates.
     """
-    if context_pcm.size == 0:
-        return ""
-    eng = getWhisperEngine(model_size=model_size, language=language)
-    result = eng.transcribeContext(context_pcm, sample_rate=sample_rate)
-    parts: List[str] = []
-    ws, we = window_start_ms, window_end_ms
-    for seg in result.get("segments", []):
-        t0_ms = abs_context_start_ms + int(float(seg["start"]) * 1000)
-        t1_ms = abs_context_start_ms + int(float(seg["end"]) * 1000)
-        if t1_ms <= ws or t0_ms >= we:
-            continue
-        text_piece = seg.get("text", "").strip()
-        if text_piece:
-            parts.append(text_piece)
-    if not parts and result.get("text"):
-        return str(result["text"]).strip()
-    return " ".join(parts).strip()
+    t, _ = transcribeWindowTextAndWords(
+        context_pcm=context_pcm,
+        sample_rate=sample_rate,
+        abs_context_start_ms=abs_context_start_ms,
+        window_start_ms=window_start_ms,
+        window_end_ms=window_end_ms,
+        model_size=model_size,
+        language=language,
+    )
+    return t
 
 
 def collectWordSpansMeetingMs(
@@ -112,20 +160,14 @@ def collectWordSpansMeetingMs(
     model_size: str,
     language: str,
 ) -> List[Tuple[int, int, str]]:
-    """Debug helper: words with meeting-ms (start,end,text)."""
-    if context_pcm.size == 0:
-        return []
-    eng = getWhisperEngine(model_size=model_size, language=language)
-    result = eng.transcribeContext(context_pcm, sample_rate=sample_rate)
-    out: List[Tuple[int, int, str]] = []
-    ws, we = window_start_ms, window_end_ms
-    for seg in result.get("segments", []):
-        for w in seg.get("words") or []:
-            t0_ms = abs_context_start_ms + int(float(w["start"]) * 1000)
-            t1_ms = abs_context_start_ms + int(float(w["end"]) * 1000)
-            if t1_ms <= ws or t0_ms >= we:
-                continue
-            wt = str(w.get("word", "")).strip()
-            if wt:
-                out.append((t0_ms, t1_ms, wt))
-    return out
+    """Words with meeting-ms (start,end,text) clipped to window."""
+    _, words = transcribeWindowTextAndWords(
+        context_pcm=context_pcm,
+        sample_rate=sample_rate,
+        abs_context_start_ms=abs_context_start_ms,
+        window_start_ms=window_start_ms,
+        window_end_ms=window_end_ms,
+        model_size=model_size,
+        language=language,
+    )
+    return words

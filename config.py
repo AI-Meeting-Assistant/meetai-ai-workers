@@ -44,7 +44,17 @@ class Settings:
     run_live_asr: bool
     run_live_diarization_stub: bool
     vad_energy_rms_quantile_for_speech: float
-    vad_speech_ratio_min_for_asr: float
+    vad_speech_ratio_min_asr: float
+
+    #: ECAPA embedding + canonical Speaker 1…N assignment (live)
+    run_live_speaker_id: bool
+    speaker_max_canonical: int
+    speaker_match_cos_threshold: float
+    speaker_centroid_ema_alpha: float
+    speaker_min_segment_ms: float
+    """Minimum VAD speech duration before opening a *new* canonical speaker."""
+    speaker_new_identity_min_ms: float
+    speaker_context_prefix_ms: int
 
     @staticmethod
     def load() -> "Settings":
@@ -69,7 +79,14 @@ class Settings:
             run_live_diarization_stub=os.getenv("RUN_LIVE_DIARIZATION_STUB", "1")
             not in ("0", "false", "False"),
             vad_energy_rms_quantile_for_speech=_float_env("VAD_ENERGY_RMS_QUANTILE", 0.35),
-            vad_speech_ratio_min_for_asr=_float_env("VAD_SPEECH_RATIO_MIN_ASR", 10.0),
+            vad_speech_ratio_min_asr=_float_env("VAD_SPEECH_RATIO_MIN_ASR", 10.0),
+            run_live_speaker_id=os.getenv("RUN_LIVE_SPEAKER_ID", "1") not in ("0", "false", "False"),
+            speaker_max_canonical=max(2, min(8, _int_env("SPEAKER_MAX_CANONICAL", 8))),
+            speaker_match_cos_threshold=_float_env("SPEAKER_MATCH_COS_THRESHOLD", 0.25),
+            speaker_centroid_ema_alpha=_float_env("SPEAKER_CENTROID_EMA_ALPHA", 0.35),
+            speaker_min_segment_ms=_float_env("SPEAKER_MIN_SEGMENT_MS", 400.0),
+            speaker_new_identity_min_ms=_float_env("SPEAKER_NEW_IDENTITY_MIN_MS", 700.0),
+            speaker_context_prefix_ms=_int_env("SPEAKER_CONTEXT_PREFIX_MS", 320),
         )
 
 

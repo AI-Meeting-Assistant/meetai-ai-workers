@@ -66,7 +66,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     supervisor = WorkerSupervisor()
     await loop.run_in_executor(None, supervisor.start_blocking)
     app.state.worker_supervisor = supervisor
-    log.info("Worker processes started and ready")
+    if supervisor.can_accept_ingest():
+        log.info("Worker processes started and ready")
+    else:
+        log.error(
+            "Worker readiness incomplete; /health and /ingest return 503 until workers load",
+            failed_modules=list(supervisor.failed_modules),
+            dead_modules=supervisor.dead_modules(),
+        )
     yield
     log.info("Shutting down meetai-ai-workers gateway")
     await close_async_redis()
