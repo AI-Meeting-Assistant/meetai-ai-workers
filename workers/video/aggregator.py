@@ -33,9 +33,8 @@ _POSE_WEIGHT = 0.8
 # Gaze dead zone: iris naturally offset ~0.1 due to camera/screen geometry.
 _GAZE_DEAD_ZONE = 0.2
 
-# Head pose tolerances: tighter so head turns register as inattention.
-_YAW_TOLERANCE_DEG   = 25.0
-_PITCH_TOLERANCE_DEG = 20.0
+_YAW_TOLERANCE_DEG   = 28.0
+_PITCH_TOLERANCE_DEG = 30.0  # widened from 22° — iris compensation handles the rest
 
 
 @dataclass
@@ -110,24 +109,56 @@ def _focusScore(
                 looking at screen. Penalty kicks in only beyond the dead zone
                 and ramps to 0 at offset 1.0.
 
-    Pose score: dead zone of ±5° absorbs solvePnP noise. Linear ramp to 0
-                beyond ±_YAW_TOLERANCE_DEG / ±_PITCH_TOLERANCE_DEG.
+    Pose score: NaN frames (solvePnP failed) are excluded from pose averaging.
+                Yaw: dead zone ±5°, tolerance ±28°.
+                Pitch: iris-compensated within a screen-viewing window only.
+                  Compensation fires when pitch is in (PITCH_NATURAL_OFFSET, PITCH_COMP_MAX),
+                  i.e. head is tilted downward but not so far it's clearly the desk.
+                  Outside that window (looking up OR head nearly at desk) the full pitch
+                  penalty applies.  gaze_y < -0.08 (iris above eye centre) reduces the
+                  pitch penalty by up to 85%.
+                Natural offset shifted to 10° to meet most monitor setups halfway.
     """
     gaze_offset = float(np.mean(np.sqrt(gaze_x ** 2 + gaze_y ** 2)))
     effective_gaze = max(0.0, gaze_offset - _GAZE_DEAD_ZONE)
     gaze_score = float(np.clip(1.0 - effective_gaze / (1.0 - _GAZE_DEAD_ZONE), 0.0, 1.0))
 
-    # Laptop camera sits above the screen: natural downward gaze produces pitch ~-15°.
-    # Shift pitch by this offset before penalising so normal screen-viewing scores well.
-    _PITCH_NATURAL_OFFSET = -15.0
+    _PITCH_NATURAL_OFFSET = 10.0  # shifted from 0° — typical screen-viewing angle
     _YAW_DEAD_ZONE   = 5.0
-    _PITCH_DEAD_ZONE = 5.0
+    _PITCH_DEAD_ZONE = 15.0
 
-    yaw_excess   = np.maximum(0.0, np.abs(yaw) - _YAW_DEAD_ZONE)
-    pitch_excess = np.maximum(0.0, np.abs(pitch - _PITCH_NATURAL_OFFSET) - _PITCH_DEAD_ZONE)
+    # --- NaN filtering: exclude frames where solvePnP failed ---
+    valid_pose = ~(np.isnan(yaw) | np.isnan(pitch))
+    if not np.any(valid_pose):
+        pose_score = 0.5  # no pose data — treat as neutral, not perfect
+        return float(np.clip(_GAZE_WEIGHT * gaze_score + _POSE_WEIGHT * pose_score, 0.0, 1.0))
 
-    yaw_penalty   = np.mean(np.clip(yaw_excess   / (_YAW_TOLERANCE_DEG   - _YAW_DEAD_ZONE),   0.0, 1.0))
-    pitch_penalty = np.mean(np.clip(pitch_excess / (_PITCH_TOLERANCE_DEG - _PITCH_DEAD_ZONE), 0.0, 1.0))
+    yaw_v   = yaw[valid_pose]
+    pitch_v = pitch[valid_pose]
+    gaze_y_v = gaze_y[valid_pose]
+
+    # --- Yaw penalty (unchanged) ---
+    yaw_excess = np.maximum(0.0, np.abs(yaw_v) - _YAW_DEAD_ZONE)
+    yaw_penalty = np.mean(np.clip(yaw_excess / (_YAW_TOLERANCE_DEG - _YAW_DEAD_ZONE), 0.0, 1.0))
+
+    # --- Iris-compensated pitch penalty ---
+    # Compensation is gated to the plausible screen-viewing pitch window:
+    #   pitch > PITCH_NATURAL_OFFSET  → head is genuinely tilted down toward screen
+    #   pitch < PITCH_COMP_MAX        → not so far down it's clearly the desk/lap
+    # Outside this window (negative pitch = looking up, or extreme positive = desk)
+    # gaze_y upward is not evidence of screen-viewing, so no compensation.
+    _IRIS_COMP_THRESHOLD = 0.08
+    _PITCH_COMP_MAX = 45.0
+    in_screen_range = (pitch_v > _PITCH_NATURAL_OFFSET) & (pitch_v < _PITCH_COMP_MAX)
+    compensation = np.where(
+        in_screen_range,
+        np.clip(-gaze_y_v / _IRIS_COMP_THRESHOLD, 0.0, 1.0),
+        0.0,
+    )
+    pitch_excess = np.maximum(0.0, np.abs(pitch_v - _PITCH_NATURAL_OFFSET) - _PITCH_DEAD_ZONE)
+    raw_pitch_penalty = np.clip(pitch_excess / (_PITCH_TOLERANCE_DEG - _PITCH_DEAD_ZONE), 0.0, 1.0)
+    pitch_penalty = np.mean(raw_pitch_penalty * (1.0 - 0.85 * compensation))
+
     pose_score = float(np.clip(1.0 - (yaw_penalty + pitch_penalty) / 2.0, 0.0, 1.0))
 
     return float(np.clip(

@@ -15,6 +15,7 @@ from typing import Annotated, Any, AsyncIterator
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 
 _ROOT = Path(__file__).resolve().parent
 if str(_ROOT) not in sys.path:
@@ -83,6 +84,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="meetai-ai-workers gateway", lifespan=lifespan)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:5174"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+
 
 @app.exception_handler(RequestValidationError)
 async def _validation_envelope_handler(_request: Any, exc: RequestValidationError) -> Any:
@@ -115,7 +123,7 @@ async def ingest(
     stream_ticket: Annotated[str, Form(alias="streamTicket")],
     offset_ms_field: Annotated[str, Form(alias="offsetMs")],
     audio_chunk: Annotated[UploadFile, File(alias="audioChunk")],
-    video_chunk: Annotated[UploadFile, File(alias="videoChunk")],
+    video_frames: Annotated[list[UploadFile], File(alias="videoFrames[]")],
 ) -> Any:
     supervisor: WorkerSupervisor | None = getattr(app.state, "worker_supervisor", None)
 
@@ -163,8 +171,13 @@ async def ingest(
             http_status_code=400,
         )
 
-    log.debug("Ingest chunk accepted", meeting_id=meeting_id, offset_ms=offset_ms)
-    audio_bytes, video_bytes = await asyncio.gather(audio_chunk.read(), video_chunk.read())
+    log.debug("Ingest chunk accepted", meeting_id=meeting_id, offset_ms=offset_ms, n_video_frames=len(video_frames))
+
+    audio_bytes, *frame_bytes_list = await asyncio.gather(
+        audio_chunk.read(),
+        *[f.read() for f in video_frames],
+    )
+    video_frames_bytes = [bytes(b) for b in frame_bytes_list]
 
     enqueue_callable = partial(
         enqueue_ingest_to_workers_blocking,
@@ -175,7 +188,7 @@ async def ingest(
         meeting_id=meeting_id,
         offset_ms=offset_ms,
         audio_webm_bytes=bytes(audio_bytes),
-        video_bytes=bytes(video_bytes),
+        video_frames=video_frames_bytes,
     )
     loop = asyncio.get_running_loop()
     try:

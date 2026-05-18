@@ -204,7 +204,7 @@ def enqueue_ingest_to_workers_blocking(
     meeting_id: str,
     offset_ms: int,
     audio_webm_bytes: bytes,
-    video_bytes: bytes,
+    video_frames: list[bytes],
 ) -> None:
     """Send mirrored chunk payloads to audio and vision workers (**blocking** Pipe send, thread-safe)."""
     with audio_send_lock:
@@ -222,6 +222,6 @@ def enqueue_ingest_to_workers_blocking(
                 "type": "chunk",
                 "meetingId": meeting_id,
                 "offsetMs": offset_ms,
-                "videoBytes": video_bytes,
+                "videoFrames": video_frames,
             }
         )

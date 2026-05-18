@@ -40,7 +40,7 @@ def videoWorkerLoop(conn: Any, processLiveVisionChunk: Any) -> None:
     ``conn``: child (**recv**) end of ``Pipe(duplex=False)``.
 
     Message shape::
-        {\"type\": \"chunk\", \"meetingId\": uuid, \"offsetMs\": int, \"videoBytes\": bytes}
+        {\"type\": \"chunk\", \"meetingId\": uuid, \"offsetMs\": int, \"videoFrames\": list[bytes]}
         {\"type\": \"shutdown\"}
     """
     while True:
@@ -57,14 +57,16 @@ def videoWorkerLoop(conn: Any, processLiveVisionChunk: Any) -> None:
             continue
         meeting_id = msg.get("meetingId") or msg.get("meeting_id")
         offset_ms = msg.get("offsetMs", msg.get("offset_ms"))
-        raw = msg.get("videoBytes", msg.get("video_bytes", msg.get("videoChunk", b"")))
+        frames = msg.get("videoFrames", msg.get("video_frames", []))
         if meeting_id is None or offset_ms is None:
             continue
+        if not isinstance(frames, list):
+            frames = []
         try:
             processLiveVisionChunk(
                 meeting_id=str(meeting_id),
                 offset_ms=int(offset_ms),
-                video_bytes=raw if isinstance(raw, (bytes, bytearray)) else bytes(raw),
+                jpeg_frames=[bytes(f) for f in frames],
             )
         except Exception:
             traceback.print_exc()

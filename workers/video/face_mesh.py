@@ -26,13 +26,15 @@ def _getFaceMesh():
     if _face_mesh is None:
         import mediapipe as mp  # type: ignore
         _face_mesh = mp.solutions.face_mesh.FaceMesh(
-            static_image_mode=False,
+            static_image_mode=True,   # 400x400 face crops are clean — per-frame detection
+                                      # is reliable and avoids tracker poisoning from blank frames
             max_num_faces=5,
-            refine_landmarks=True,   # adds 10 iris landmarks (468-477)
-            min_detection_confidence=0.3,  # lowered: screen-share thumbnails are small/compressed
-            min_tracking_confidence=0.3,
+            refine_landmarks=True,    # adds 10 iris landmarks (468-477)
+            min_detection_confidence=0.5,
         )
     return _face_mesh
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +53,10 @@ _MODEL_POINTS_3D = np.array([
 
 # Corresponding MediaPipe landmark indices
 _POSE_LANDMARK_IDX = [1, 152, 33, 263, 61, 291]
+
+# Landmark embedding indices — 8 stable points (eye corners, nose tip, mouth corners)
+# Normalised by face bbox → 16-d unit vector used for cross-chunk identity matching.
+_EMBEDDING_LANDMARKS = [33, 133, 362, 263, 1, 61, 291, 199]
 
 # Iris landmark indices (refine_landmarks=True required)
 _LEFT_IRIS_CENTER  = 468   # iris centre — left eye
@@ -71,7 +77,7 @@ _MAR_IDX = (13, 14, 78, 308)
 
 @dataclass
 class FaceFeatures:
-    person_idx: int          # order of detection in this frame (0-based)
+    person_idx: int          # order of detection in this frame (0-based); reassigned to stable ID by tracker
     gaze_x: float            # horizontal iris offset; + = looking right
     gaze_y: float            # vertical iris offset;   + = looking down
     yaw: float               # degrees; + = face turned right
@@ -79,6 +85,7 @@ class FaceFeatures:
     roll: float              # degrees; + = face tilted clockwise
     mar: float               # mouth aspect ratio
     bbox: Tuple[int, int, int, int]  # (x1, y1, x2, y2) with padding
+    embedding: np.ndarray = field(default_factory=lambda: np.zeros(16, dtype=np.float32))  # 16-d unit vector
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +132,7 @@ def _analyzeFaces(frame_bgr: np.ndarray) -> List[FaceFeatures]:
         gaze_x, gaze_y = _computeGaze(lms, w, h)
         yaw, pitch, roll = _computeHeadPose(lms, w, h, cam_matrix, dist_coeffs)
         mar = _computeMAR(lms, w, h)
+        embedding = _computeEmbedding(lms, w, h, bbox)
 
         features.append(FaceFeatures(
             person_idx=idx,
@@ -135,6 +143,7 @@ def _analyzeFaces(frame_bgr: np.ndarray) -> List[FaceFeatures]:
             roll=roll,
             mar=mar,
             bbox=bbox,
+            embedding=embedding,
         ))
     return features
 
@@ -220,7 +229,7 @@ def _computeHeadPose(
         flags=cv2.SOLVEPNP_ITERATIVE,
     )
     if not ok:
-        return 0.0, 0.0, 0.0
+        return float('nan'), float('nan'), float('nan')
 
     # Rodrigues → rotation matrix
     rmat, _ = cv2.Rodrigues(rvec)
@@ -240,11 +249,36 @@ def _computeHeadPose(
         yaw_rad  = np.arctan2(rmat[1, 0] / cos_pitch, rmat[0, 0] / cos_pitch)
         roll_rad = np.arctan2(rmat[2, 1] / cos_pitch, rmat[2, 2] / cos_pitch)
 
-    return (
-        float(np.degrees(yaw_rad)),
-        float(np.degrees(pitch_rad)),
-        float(np.degrees(roll_rad)),
-    )
+    yaw_deg   = float(np.degrees(yaw_rad))
+    pitch_deg = float(np.degrees(pitch_rad))
+    roll_deg  = float(np.degrees(roll_rad))
+
+    # |yaw| > 90° is a solvePnP back-of-head flip artifact (common when the
+    # video is horizontally mirrored, e.g. Google Meet self-view). Discard.
+    if abs(yaw_deg) > 90:
+        return float('nan'), float('nan'), float('nan')
+
+    return yaw_deg, pitch_deg, roll_deg
+
+
+def _computeEmbedding(lms, w: int, h: int, bbox: Tuple[int, int, int, int]) -> np.ndarray:
+    """
+    16-d unit-normalised landmark embedding for cross-chunk identity matching.
+
+    Takes the 8 stable landmarks in _EMBEDDING_LANDMARKS, normalises their
+    pixel positions by the face bbox dimensions, and returns a unit vector.
+    Cosine similarity between two embeddings of the same person is typically > 0.95.
+    """
+    x1, y1, x2, y2 = bbox
+    bw = max(x2 - x1, 1)
+    bh = max(y2 - y1, 1)
+    pts: list[float] = []
+    for i in _EMBEDDING_LANDMARKS:
+        pts.append((lms[i].x * w - x1) / bw)
+        pts.append((lms[i].y * h - y1) / bh)
+    v = np.array(pts, dtype=np.float32)
+    norm = np.linalg.norm(v)
+    return v / norm if norm > 1e-6 else v
 
 
 def _computeMAR(lms, w: int, h: int) -> float:
