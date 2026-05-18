@@ -124,6 +124,8 @@ async def ingest(
     offset_ms_field: Annotated[str, Form(alias="offsetMs")],
     audio_chunk: Annotated[UploadFile, File(alias="audioChunk")],
     video_frames: Annotated[list[UploadFile], File(alias="videoFrames[]")],
+    title: Annotated[str, Form(alias="title")] = "",
+    agenda: Annotated[str, Form(alias="agenda")] = "",
 ) -> Any:
     supervisor: WorkerSupervisor | None = getattr(app.state, "worker_supervisor", None)
 
@@ -183,12 +185,16 @@ async def ingest(
         enqueue_ingest_to_workers_blocking,
         supervisor.audio_pipe_send_end,
         supervisor.video_pipe_send_end,
+        supervisor.text_pipe_send_end,
         supervisor.audio_send_lock,
         supervisor.video_send_lock,
+        supervisor.text_send_lock,
         meeting_id=meeting_id,
         offset_ms=offset_ms,
         audio_webm_bytes=bytes(audio_bytes),
         video_frames=video_frames_bytes,
+        title=title,
+        agenda=agenda,
     )
     loop = asyncio.get_running_loop()
     try:

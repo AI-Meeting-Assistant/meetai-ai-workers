@@ -34,6 +34,8 @@ class Settings:
     asr_context_window_ms: int
     text_analysis_interval_ms: int
     text_transcript_ring_buffer_slots: int
+    ollama_url: str
+    ollama_model: str
     redis_url: str
     target_sample_rate: int
     whisper_model_size: str
@@ -71,6 +73,8 @@ class Settings:
             asr_context_window_ms=_int_env("ASR_CONTEXT_WINDOW_MS", 10000),
             text_analysis_interval_ms=text_iv,
             text_transcript_ring_buffer_slots=slots,
+            ollama_url=os.getenv("OLLAMA_URL", "http://localhost:11434"),
+            ollama_model=os.getenv("OLLAMA_MODEL", "qwen2.5:3b"),
             redis_url=redis_url,
             target_sample_rate=_int_env("TARGET_SAMPLE_RATE", 16000),
             whisper_model_size=os.getenv("WHISPER_MODEL_SIZE", "small"),

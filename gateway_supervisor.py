@@ -70,34 +70,36 @@ class WorkerSupervisor:
         import threading
         self.audio_send_lock = threading.Lock()
         self.video_send_lock = threading.Lock()
+        self.text_send_lock  = threading.Lock()
         self._audio_send: Optional[Any] = None
         self._video_send: Optional[Any] = None
+        self._text_send:  Optional[Any] = None
         self._audio_proc: Optional[mp.Process] = None
         self._video_proc: Optional[mp.Process] = None
+        self._text_proc:  Optional[mp.Process] = None
         self.failed_modules: list[str] = []
 
     def _reset_state(self) -> None:
         self.failed_modules = []
 
     def start_blocking(self) -> None:
-        """
-        Spawn workers and collect readiness (**blocking** caller thread).
-
-        ``text`` worker intentionally omitted (PYTHON_WORKERS_IMPLEMENTATION.md §3.2 placeholder).
-        """
+        """Spawn workers and collect readiness (**blocking** caller thread)."""
         self._reset_state()
         from multiprocessing.connection import Pipe
 
         from workers.audio.worker_main import audio_worker_process_target
         from workers.video.worker_main import video_worker_process_target
+        from workers.text.worker_main  import text_worker_process_target
 
         readiness_queue = self._ctx.Queue()
 
         audio_recv_conn, audio_send_conn = Pipe(duplex=False)
         video_recv_conn, video_send_conn = Pipe(duplex=False)
+        text_recv_conn,  text_send_conn  = Pipe(duplex=False)
 
         self._audio_send = audio_send_conn
         self._video_send = video_send_conn
+        self._text_send  = text_send_conn
 
         self._audio_proc = self._ctx.Process(
             target=audio_worker_process_target,
@@ -109,10 +111,16 @@ class WorkerSupervisor:
             args=(video_recv_conn, readiness_queue),
             name="meetaiVideoWorker",
         )
+        self._text_proc = self._ctx.Process(
+            target=text_worker_process_target,
+            args=(text_recv_conn, readiness_queue),
+            name="meetaiTextWorker",
+        )
         self._audio_proc.start()
         self._video_proc.start()
+        self._text_proc.start()
 
-        required = ("audio", "video")
+        required = ("audio", "video", "text")
         log.info("Waiting for worker readiness", timeout_sec=READINESS_SECONDS, modules=required)
         outcomes, errors = _wait_worker_readiness(
             readiness_queue,
@@ -133,11 +141,14 @@ class WorkerSupervisor:
         if self._video_proc.exitcode not in (None, 0) and "video" not in self.failed_modules:
             self.failed_modules.append("video")
             log.error("Video worker process exited unexpectedly", exitcode=self._video_proc.exitcode)
+        if self._text_proc.exitcode not in (None, 0) and "text" not in self.failed_modules:
+            self.failed_modules.append("text")
+            log.error("Text worker process exited unexpectedly", exitcode=self._text_proc.exitcode)
 
     def shutdown_blocking(self, join_timeout_seconds: float = 8.0) -> None:
         """Graceful Pipe shutdown signals; join with timeout."""
         self._shutdown_send_shutdown()
-        for proc in (self._audio_proc, self._video_proc):
+        for proc in (self._audio_proc, self._video_proc, self._text_proc):
             if proc is None:
                 continue
             proc.join(timeout=max(1.0, join_timeout_seconds * 0.5))
@@ -148,11 +159,11 @@ class WorkerSupervisor:
                 except Exception:
                     log.error("Failed to terminate worker process", exc_info=True)
                 proc.join(timeout=2.0)
-        self._audio_send = self._video_send = None
-        self._audio_proc = self._video_proc = None
+        self._audio_send = self._video_send = self._text_send = None
+        self._audio_proc = self._video_proc = self._text_proc = None
 
     def _shutdown_send_shutdown(self) -> None:
-        for conn in (self._audio_send, self._video_send):
+        for conn in (self._audio_send, self._video_send, self._text_send):
             if conn is None:
                 continue
             try:
@@ -172,6 +183,12 @@ class WorkerSupervisor:
             raise RuntimeError("WorkerSupervisor not started")
         return self._video_send
 
+    @property
+    def text_pipe_send_end(self) -> Any:
+        if self._text_send is None:
+            raise RuntimeError("WorkerSupervisor not started")
+        return self._text_send
+
     def dead_modules(self) -> list[str]:
         """Modules whose OS process is gone (post warm-up crash or failed spawn)."""
         dead: list[str] = []
@@ -179,6 +196,8 @@ class WorkerSupervisor:
             dead.append("audio")
         if self._video_proc is None or not self._video_proc.is_alive():
             dead.append("video")
+        if self._text_proc is None or not self._text_proc.is_alive():
+            dead.append("text")
         return dead
 
     def can_accept_ingest(self) -> bool:
@@ -188,25 +207,35 @@ class WorkerSupervisor:
         if (
             self._audio_proc is None
             or self._video_proc is None
+            or self._text_proc is None
             or self._audio_send is None
             or self._video_send is None
+            or self._text_send is None
         ):
             return False
-        return self._audio_proc.is_alive() and self._video_proc.is_alive()
+        return (
+            self._audio_proc.is_alive()
+            and self._video_proc.is_alive()
+            and self._text_proc.is_alive()
+        )
 
 
 def enqueue_ingest_to_workers_blocking(
     audio_send_conn: Any,
     video_send_conn: Any,
+    text_send_conn: Any,
     audio_send_lock: Any,
     video_send_lock: Any,
+    text_send_lock: Any,
     *,
     meeting_id: str,
     offset_ms: int,
     audio_webm_bytes: bytes,
     video_frames: list[bytes],
+    title: str = "",
+    agenda: str = "",
 ) -> None:
-    """Send mirrored chunk payloads to audio and vision workers (**blocking** Pipe send, thread-safe)."""
+    """Send chunk payloads to audio, video, and text workers (**blocking** Pipe send, thread-safe)."""
     with audio_send_lock:
         audio_send_conn.send(
             {
@@ -223,5 +252,15 @@ def enqueue_ingest_to_workers_blocking(
                 "meetingId": meeting_id,
                 "offsetMs": offset_ms,
                 "videoFrames": video_frames,
+            }
+        )
+    with text_send_lock:
+        text_send_conn.send(
+            {
+                "type": "chunk",
+                "meetingId": meeting_id,
+                "offsetMs": offset_ms,
+                "title": title,
+                "agenda": agenda,
             }
         )
