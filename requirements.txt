@@ -20,7 +20,7 @@ numpy>=1.24,<2  # torch/whisper wheels on Windows still expect NumPy 1.x ABI
 av>=12.0                    # PyAV: WebM/Opus decode (bundles FFmpeg libs, no system install)
 
 openai-whisper
-pyannote.audio>=4.0
+pyannote.audio>=3.1,<4.0
 protobuf>=4.25.3,<5
 speechbrain==1.0.3
 
