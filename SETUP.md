@@ -112,3 +112,24 @@ Any model available on Ollama works — just change `OLLAMA_MODEL` in `.env`:
 | `qwen2.5:7b` | ~4.5 GB | Higher accuracy, slower on CPU |
 | `llama3.2:3b` | ~2 GB | Good alternative |
 | `phi3:mini` | ~2.3 GB | Microsoft, very fast |
+
+## 7. Recorded meeting upload (`POST /ingest-recorded`)
+
+Used when the frontend uploads a full audio/video file (not live chunks).
+
+1. Node creates a `RECORDED` meeting (`IN_PROGRESS`) and returns `streamTicket`.
+2. Frontend multipart POST to `http://localhost:8000/ingest-recorded` with `meetingId`, `streamTicket`, `file`, `title`, `agenda`.
+3. Gateway stores file under `UPLOAD_DIR/{meetingId}/`, converts to WAV, runs batch VAD + diarization + Whisper, then Ollama adherence + summary.
+4. Result is published to Redis `meeting:{id}:recorded-complete`; Node persists `TIMELINE_DATA` at `offset_ms=0` and sets meeting `COMPLETED`.
+
+Env (see `.env.example`):
+
+```env
+UPLOAD_DIR=./uploads
+MAX_UPLOAD_SIZE_MB=500
+RECORDED_KEEP_FILES=0
+```
+
+Requires `HF_TOKEN` for pyannote diarization in batch mode.
+
+**PyTorch 2.6+:** batch pyannote checkpoints use `torch.load` with Lightning objects; the repo imports [`workers/audio/_torch_compat.py`](workers/audio/_torch_compat.py) before pyannote so `weights_only` defaults to `False` for trusted HF weights (avoids `UnpicklingError` / `ModelCheckpoint` allowlist issues).

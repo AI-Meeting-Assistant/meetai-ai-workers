@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Annotated, Any, AsyncIterator
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -214,6 +214,91 @@ async def ingest(
         )
 
     return ingest_success_response()
+
+
+@app.post("/ingest-recorded")
+async def ingest_recorded(
+    background_tasks: BackgroundTasks,
+    meeting_id: Annotated[str, Form(alias="meetingId")],
+    stream_ticket: Annotated[str, Form(alias="streamTicket")],
+    file: Annotated[UploadFile, File()],
+    title: Annotated[str, Form(alias="title")] = "",
+    agenda: Annotated[str, Form(alias="agenda")] = "",
+) -> Any:
+    """Accept a full audio/video file for offline recorded-meeting processing."""
+    settings = get_settings()
+    max_bytes = settings.max_upload_size_mb * 1024 * 1024
+
+    redis_ok = await ping_redis()
+    if not redis_ok:
+        return error_envelope_json_response(
+            503,
+            "Redis unavailable — cannot authorize ingest.",
+            http_status_code=503,
+        )
+
+    ticket_outcome = await validate_stream_ticket(meeting_id, stream_ticket)
+    if ticket_outcome is None:
+        return error_envelope_json_response(
+            503,
+            "Redis unavailable during ticket validation.",
+            http_status_code=503,
+        )
+    if ticket_outcome is False:
+        return error_envelope_json_response(401, "invalid stream ticket", http_status_code=401)
+
+    original_name = file.filename or "upload.bin"
+    ext = Path(original_name).suffix or ".bin"
+    upload_dir = Path(settings.upload_dir) / meeting_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = upload_dir / f"original{ext}"
+
+    total = 0
+    try:
+        with dest_path.open("wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    dest_path.unlink(missing_ok=True)
+                    return error_envelope_json_response(
+                        400,
+                        f"File exceeds maximum size of {settings.max_upload_size_mb} MB",
+                        http_status_code=400,
+                    )
+                out.write(chunk)
+    except Exception:
+        dest_path.unlink(missing_ok=True)
+        log.error("Failed to store recorded upload", meeting_id=meeting_id, exc_info=True)
+        return error_envelope_json_response(500, "Failed to store upload", http_status_code=500)
+
+    if total == 0:
+        dest_path.unlink(missing_ok=True)
+        return error_envelope_json_response(400, "Empty file upload", http_status_code=400)
+
+    from workers.audio.recorded_processor import process_recorded_meeting_sync
+
+    background_tasks.add_task(
+        process_recorded_meeting_sync,
+        meeting_id,
+        str(dest_path),
+        title,
+        agenda,
+    )
+
+    log.info(
+        "Recorded upload accepted for background processing",
+        meeting_id=meeting_id,
+        bytes=total,
+        path=str(dest_path),
+    )
+    return success_envelope_json_response(
+        message="Recorded upload accepted — processing started",
+        data={"meetingId": meeting_id},
+        status_code=202,
+    )
 
 
 if __name__ == "__main__":

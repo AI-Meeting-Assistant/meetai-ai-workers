@@ -10,7 +10,7 @@ from config import get_settings
 from core.fusion_publisher import channel_text, publish_json
 from infrastructure.redis_client import get_redis_client
 from utils.logger import get_logger
-from workers.text.adherence import analyzeAdherence
+from workers.text.adherence import analyzeAdherence, summarizeTranscript
 
 log = get_logger(__name__)
 
@@ -103,3 +103,43 @@ def evictMeeting(meeting_id: str) -> None:
     """Remove cached state when a meeting ends."""
     _meta.pop(meeting_id, None)
     _buffers.pop(meeting_id, None)
+
+
+async def analyzeFullTranscriptAdherence(
+    transcript: str,
+    title: str,
+    agenda: str,
+) -> dict:
+    """One-shot adherence analysis for a full recorded meeting transcript."""
+    settings = get_settings()
+    result = await analyzeAdherence(
+        title=title or "Meeting",
+        agenda=agenda or "",
+        transcript=transcript,
+        ollama_url=settings.ollama_url,
+        model=settings.ollama_model,
+    )
+    score = result.get("adherence_score")
+    return {
+        "score": float(score) if score is not None else None,
+        "onTopic": result.get("on_topic"),
+        "reason": result.get("reason"),
+    }
+
+
+async def summarizeFullTranscript(
+    transcript: str,
+    title: str,
+    agenda: str,
+) -> str:
+    """One-shot AI summary for a full recorded meeting transcript."""
+    if not transcript.strip():
+        return ""
+    settings = get_settings()
+    return await summarizeTranscript(
+        title=title or "Meeting",
+        agenda=agenda or "",
+        transcript=transcript,
+        ollama_url=settings.ollama_url,
+        model=settings.ollama_model,
+    )

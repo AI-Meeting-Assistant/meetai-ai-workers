@@ -22,5 +22,13 @@ def channel_text(meeting_id: str) -> str:
     return f"meeting:{meeting_id}:text"
 
 
+def channel_recorded_complete(meeting_id: str) -> str:
+    return f"meeting:{meeting_id}:recorded-complete"
+
+
+def channel_recorded_error(meeting_id: str) -> str:
+    return f"meeting:{meeting_id}:recorded-error"
+
+
 def publish_json(redis_client: SupportsPublish, channel: str, data: dict[str, Any]) -> None:
     redis_client.publish(channel, json.dumps(data, ensure_ascii=False))

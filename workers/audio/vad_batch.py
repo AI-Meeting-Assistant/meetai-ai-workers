@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 
+from . import _torch_compat  # noqa: F401 — PyTorch 2.6+ weights_only vs pyannote checkpoints
+
 from pyannote.audio import Pipeline
 
 

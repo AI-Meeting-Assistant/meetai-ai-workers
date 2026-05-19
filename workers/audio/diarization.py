@@ -10,6 +10,8 @@ from typing import Any
 
 from collections import defaultdict
 
+from . import _torch_compat  # noqa: F401 — PyTorch 2.6+ weights_only vs pyannote checkpoints
+
 import torch
 
 try:

@@ -59,3 +59,35 @@ Respond ONLY with a JSON object, no explanation:
     except Exception:
         log.error("Ollama call failed", exc_info=True)
         return {"adherence_score": None, "on_topic": None, "reason": "llm_error"}
+
+
+async def summarizeTranscript(
+    title: str,
+    agenda: str,
+    transcript: str,
+    ollama_url: str,
+    model: str,
+) -> str:
+    """Generate a one-shot meeting summary from the full transcript."""
+    prompt = f"""You are summarizing a completed meeting.
+
+Meeting title: {title}
+Meeting agenda: {agenda or '(none provided)'}
+
+Full transcript:
+{transcript}
+
+Write a concise summary in Turkish (unless the transcript is clearly English).
+Include: main topics discussed, key decisions, and action items if any.
+Use short paragraphs or bullet points. Do not invent facts not present in the transcript."""
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{ollama_url}/api/generate",
+                json={"model": model, "prompt": prompt, "stream": False},
+            )
+        return (response.json().get("response") or "").strip()
+    except Exception:
+        log.error("Ollama summary call failed", exc_info=True)
+        return ""

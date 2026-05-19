@@ -60,6 +60,10 @@ class Settings:
     speaker_new_identity_min_ms: float
     speaker_context_prefix_ms: int
 
+    upload_dir: str
+    max_upload_size_mb: int
+    recorded_keep_files: bool
+
     @staticmethod
     def load() -> "Settings":
         d = _int_env("MEDIA_CHUNK_DURATION_MS", 2000)
@@ -94,6 +98,9 @@ class Settings:
             speaker_min_segment_ms=_float_env("SPEAKER_MIN_SEGMENT_MS", 400.0),
             speaker_new_identity_min_ms=_float_env("SPEAKER_NEW_IDENTITY_MIN_MS", 700.0),
             speaker_context_prefix_ms=_int_env("SPEAKER_CONTEXT_PREFIX_MS", 320),
+            upload_dir=os.getenv("UPLOAD_DIR", "./uploads"),
+            max_upload_size_mb=_int_env("MAX_UPLOAD_SIZE_MB", 500),
+            recorded_keep_files=os.getenv("RECORDED_KEEP_FILES", "0") in ("1", "true", "True"),
         )
 
 
