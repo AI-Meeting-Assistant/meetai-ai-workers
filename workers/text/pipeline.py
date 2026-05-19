@@ -77,7 +77,7 @@ async def handleTranscript(meeting_id: str, offset_ms: int, transcript: str) -> 
     payload = {
         "meetingId": meeting_id,
         "offsetMs": offset_ms,
-        "adherenceScore": result.get("adherence_score"),
+        "contextFit": result.get("adherence_score"),
         "onTopic": result.get("on_topic"),
         "reason": result.get("reason"),
         "chunksAnalysed": len(chunks),
@@ -87,7 +87,7 @@ async def handleTranscript(meeting_id: str, offset_ms: int, transcript: str) -> 
         "Adherence result",
         meeting_id=meeting_id,
         offset_ms=offset_ms,
-        adherence_score=payload["adherenceScore"],
+        context_fit=payload["contextFit"],
         on_topic=payload["onTopic"],
         reason=payload["reason"],
     )
