@@ -83,3 +83,6 @@ temp/
 
 # --- Local Claude context (not for sharing) ---
 CLAUDE.md
+
+pretrained_models/
+requirements.txt

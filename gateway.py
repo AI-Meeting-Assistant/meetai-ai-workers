@@ -14,6 +14,7 @@ from typing import Annotated, Any, AsyncIterator
 
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, File, Form, UploadFile
+from pydantic import BaseModel, Field
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -297,6 +298,50 @@ async def ingest_recorded(
     return success_envelope_json_response(
         message="Recorded upload accepted — processing started",
         data={"meetingId": meeting_id},
+        status_code=202,
+    )
+
+
+class SummarizeRequest(BaseModel):
+    meetingId: str = Field(alias="meetingId")
+    streamTicket: str = Field(alias="streamTicket")
+    transcript: str
+    title: str = ""
+    agenda: str = ""
+
+    model_config = {"populate_by_name": True}
+
+
+async def _run_summarize(meeting_id: str, transcript: str, title: str, agenda: str) -> None:
+    from workers.text.pipeline import summarizeFullTranscript
+    from core.fusion_publisher import channel_summary, publish_json
+    from infrastructure.redis_client import get_redis_client
+
+    summary = await summarizeFullTranscript(transcript, title, agenda)
+    try:
+        r = get_redis_client()
+        publish_json(r.raw, channel_summary(meeting_id), {"meetingId": meeting_id, "summary": summary})
+    except Exception:
+        log.error("Failed to publish summary to Redis", meeting_id=meeting_id, exc_info=True)
+
+
+@app.post("/summarize")
+async def summarize(background_tasks: BackgroundTasks, body: SummarizeRequest) -> Any:
+    redis_ok = await ping_redis()
+    if not redis_ok:
+        return error_envelope_json_response(503, "Redis unavailable", http_status_code=503)
+
+    ticket_outcome = await validate_stream_ticket(body.meetingId, body.streamTicket)
+    if ticket_outcome is None:
+        return error_envelope_json_response(503, "Redis unavailable during ticket validation.", http_status_code=503)
+    if ticket_outcome is False:
+        return error_envelope_json_response(401, "invalid stream ticket", http_status_code=401)
+
+    background_tasks.add_task(_run_summarize, body.meetingId, body.transcript, body.title, body.agenda)
+    log.info("Summary generation started", meeting_id=body.meetingId)
+    return success_envelope_json_response(
+        message="Summary generation started",
+        data={"meetingId": body.meetingId},
         status_code=202,
     )
 
