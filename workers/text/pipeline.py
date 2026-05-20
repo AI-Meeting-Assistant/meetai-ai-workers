@@ -77,7 +77,7 @@ async def handleTranscript(meeting_id: str, offset_ms: int, transcript: str) -> 
     payload = {
         "meetingId": meeting_id,
         "offsetMs": offset_ms,
-        "contextFit": result.get("adherence_score"),
+        "contextFit": result.get("context_fit"),
         "onTopic": result.get("on_topic"),
         "reason": result.get("reason"),
         "chunksAnalysed": len(chunks),
@@ -119,7 +119,7 @@ async def analyzeFullTranscriptAdherence(
         ollama_url=settings.ollama_url,
         model=settings.ollama_model,
     )
-    score = result.get("adherence_score")
+    score = result.get("context_fit")
     return {
         "score": float(score) if score is not None else None,
         "onTopic": result.get("on_topic"),

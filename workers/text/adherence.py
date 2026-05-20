@@ -28,19 +28,25 @@ async def analyzeAdherence(
     Returns a dict with keys: adherence_score, on_topic, reason.
     On any failure returns the same keys with None / error values.
     """
-    prompt = f"""You are analyzing a meeting transcript for topic adherence.
+    prompt = f"""You are a meeting analysis assistant. Your job is to evaluate whether a meeting transcript is on-topic relative to the meeting's title and agenda.
+
+IMPORTANT GUIDELINES:
+- Be lenient. Meetings naturally include small talk, clarifications, tangents, and side discussions that are still part of the meeting context. These should NOT be flagged as off-topic.
+- Only flag as off-topic if the conversation has clearly and substantially drifted away from the meeting's purpose — not just a brief tangent.
+- If the agenda is vague or absent, use the meeting title as the primary reference.
+- A context_fit score above 0.5 means the meeting is generally on track.
 
 Meeting title: {title}
-Meeting agenda: {agenda}
+Meeting agenda: {agenda or '(no agenda provided — use the title as reference)'}
 
-Transcript:
+Transcript excerpt:
 {transcript}
 
 Respond ONLY with a JSON object, no explanation:
 {{
-  "adherence_score": <float 0.0 to 1.0>,
-  "on_topic": <boolean>,
-  "reason": "<one sentence if off-topic, else null>"
+  "context_fit": <float 0.0 to 1.0, where 1.0 means perfectly on topic>,
+  "on_topic": <boolean, true unless conversation has clearly and substantially drifted>,
+  "reason": "<one concise sentence explaining why it is off-topic, or null if on-topic>"
 }}"""
 
     raw = ""
@@ -55,10 +61,10 @@ Respond ONLY with a JSON object, no explanation:
         return json.loads(clean)
     except json.JSONDecodeError:
         log.warning("Ollama response JSON parse error", raw=raw[:300])
-        return {"adherence_score": None, "on_topic": None, "reason": "parse_error"}
+        return {"context_fit": None, "on_topic": None, "reason": "parse_error"}
     except Exception:
         log.error("Ollama call failed", exc_info=True)
-        return {"adherence_score": None, "on_topic": None, "reason": "llm_error"}
+        return {"context_fit": None, "on_topic": None, "reason": "llm_error"}
 
 
 async def summarizeTranscript(
