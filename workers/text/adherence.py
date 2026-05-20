@@ -83,7 +83,7 @@ Meeting agenda: {agenda or '(none provided)'}
 Full transcript:
 {transcript}
 
-Write a concise summary in Turkish (unless the transcript is clearly English).
+First detect the primary language of the transcript, then write the summary in that same language.
 Include: main topics discussed, key decisions, and action items if any.
 Use short paragraphs or bullet points. Do not invent facts not present in the transcript."""
 
