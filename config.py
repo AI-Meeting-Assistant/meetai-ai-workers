@@ -72,7 +72,6 @@ class Settings:
 
     #: Post-process LLM adherence scores (see workers/text/adherence.py)
     adherence_on_topic_fit_threshold: float
-    adherence_llm_override_low_boolean: bool
 
     @staticmethod
     def load() -> "Settings":
@@ -114,8 +113,7 @@ class Settings:
             upload_dir=os.getenv("UPLOAD_DIR", "./uploads"),
             max_upload_size_mb=_int_env("MAX_UPLOAD_SIZE_MB", 500),
             recorded_keep_files=os.getenv("RECORDED_KEEP_FILES", "0") in ("1", "true", "True"),
-            adherence_on_topic_fit_threshold=_float_env("ADHERENCE_ON_TOPIC_FIT_THRESHOLD", 0.5),
-            adherence_llm_override_low_boolean=_bool_env("ADHERENCE_LLM_OVERRIDE_LOW_BOOLEAN", True),
+            adherence_on_topic_fit_threshold=_float_env("ADHERENCE_ON_TOPIC_FIT_THRESHOLD", 0.4),
         )
 
 

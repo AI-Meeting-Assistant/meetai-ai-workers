@@ -7,6 +7,7 @@ transcript is on-topic relative to the meeting title and agenda.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import httpx
@@ -16,19 +17,33 @@ from utils.logger import get_logger
 
 log = get_logger(__name__)
 
-_ADHERENCE_PROMPT = """You are a meeting analysis assistant. Score how well a transcript excerpt fits the meeting title and agenda.
+ALLOWED_CONTEXT_FITS: tuple[float, ...] = (0.20, 0.40, 0.65, 0.90)
 
-SCORING RUBRIC (context_fit, 0.0 to 1.0):
-- 0.85–1.0: Directly about the agenda subject (main theme, named entities, fans, history, current success).
-- 0.70–0.84: Same broad domain as the agenda (e.g. same sport, stadium culture, supporter behavior, comparisons, personal anecdotes tied to the topic). Brief tangents still in-domain count here.
-- 0.50–0.69: Weak link only — do NOT treat as a meeting deviation.
-- Below 0.50: Clear drift — unrelated sport, unrelated industry, personal small talk with no link to the agenda subject, or a different topic altogether.
+_ADHERENCE_PROMPT = """You are a meeting adherence scorer. Judge how well a transcript excerpt aligns with the meeting title and agenda using general concepts only — never rely on example topics from this instruction.
 
-IMPORTANT:
-- Meetings include natural tangents, comparisons, stories, and side remarks. If they still relate to the agenda's domain, score 0.70+.
-- Only set on_topic to false when context_fit would be below 0.50 AND the conversation has clearly left the agenda's subject area.
-- If on_topic is true, set reason to null.
-- If the agenda mentions personal anecdotes, history, slogans, or fan culture, those are ON-topic when discussing the same subject.
+HOW TO EVALUATE (follow in order):
+1. Read the agenda and title. Extract the general subject, intent, and key concepts (not literal word lists).
+2. Read the transcript. Identify its main theme and what is being discussed.
+3. Compare semantic overlap: same subject, adjacent/related subject, weak possible link, or no shared ground.
+4. Check word overlap: distinctive terms from the agenda (including proper names). Even one or two matches in context can support a higher tier when the discussion plausibly concerns the same subject.
+5. Pick exactly ONE score tier below.
+
+SCORE TIERS — context_fit must be exactly one of: 0.90, 0.65, 0.40, 0.20
+
+0.90 — Strong alignment
+The transcript clearly concerns the same topic or intent as the agenda/title. Direct discussion of the agenda subject counts here. Distinctive agenda terms appearing in the transcript (even briefly) with supporting context also justify 0.90. Do not hesitate to use 0.90 when the link is clear.
+
+0.65 — Related / in-scope tangent
+A nearby or overlapping topic: same general domain, natural meeting tangent, comparison, background, or prerequisite that a reasonable participant would still treat as in scope. Use 0.65 when the connection is plausible even if not the exact agenda wording. Prefer 0.65 over 0.40 when unsure between those two.
+
+0.40 — Uncertain relevance
+There might be a thematic bridge to the agenda, but evidence is thin or ambiguous. Use when you cannot confidently assign 0.65 or 0.90 yet see a possible link. When torn between 0.40 and a higher tier, choose the higher tier (generous scoring).
+
+0.20 — No meaningful alignment
+No shared subject with the agenda/title. Casual small talk (weather, weekend, unrelated personal chat) with no professional link to the agenda. A completely different subject. OR the agenda is empty, placeholder, random characters, or meaningless text — then always use 0.20 regardless of transcript content. Do not infer a substitute agenda from the title when the agenda field is empty or nonsense.
+
+GENEROUS SCORING:
+Meetings include tangents, stories, and side remarks. If they still relate to the agenda's domain, score 0.65 or 0.90. When choosing between adjacent tiers, prefer the higher tier unless the lower tier is clearly correct.
 
 Meeting title: {title}
 Meeting agenda: {agenda}
@@ -36,16 +51,31 @@ Meeting agenda: {agenda}
 Transcript excerpt:
 {transcript}
 
-Respond ONLY with a JSON object:
+Respond ONLY with valid JSON, no markdown:
 {{
-  "context_fit": <float 0.0 to 1.0>,
-  "on_topic": <boolean>,
-  "reason": "<one sentence if clearly off-topic, else null>"
+  "context_fit": <exactly 0.90 or 0.65 or 0.40 or 0.20>,
+  "reason": "<one short sentence only when context_fit is 0.20, otherwise null>"
 }}"""
 
 
+def agenda_unusable(agenda: str) -> bool:
+    """True when agenda is empty (deterministic shortcut before LLM)."""
+    return not (agenda or "").strip()
+
+
+def snap_context_fit(raw: Any) -> float | None:
+    """Map a raw score to the nearest allowed tier."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value < 0.0 or value > 1.0:
+        return None
+    return min(ALLOWED_CONTEXT_FITS, key=lambda tier: abs(tier - value))
+
+
 def normalize_adherence_result(parsed: dict[str, Any]) -> dict[str, Any]:
-    """Align context_fit and on_topic; prefer numeric score over LLM boolean."""
+    """Snap context_fit to tier values; derive on_topic from score only."""
     settings = get_settings()
     raw_fit = parsed.get("context_fit")
     if raw_fit is None:
@@ -55,27 +85,36 @@ def normalize_adherence_result(parsed: dict[str, Any]) -> dict[str, Any]:
             "reason": parsed.get("reason"),
         }
 
-    try:
-        fit = max(0.0, min(1.0, float(raw_fit)))
-    except (TypeError, ValueError):
+    fit = snap_context_fit(raw_fit)
+    if fit is None:
         return {"context_fit": None, "on_topic": None, "reason": "invalid_score"}
 
     threshold = settings.adherence_on_topic_fit_threshold
     on_topic = fit >= threshold
 
-    if settings.adherence_llm_override_low_boolean and fit >= 0.65:
-        on_topic = True
-
     reason = parsed.get("reason")
-    if on_topic:
+    if fit != 0.20:
         reason = None
     elif not reason:
         reason = "Conversation appears off-topic relative to the meeting agenda."
 
     return {
-        "context_fit": round(fit, 4),
+        "context_fit": fit,
         "on_topic": on_topic,
         "reason": reason,
+    }
+
+
+def _format_agenda_for_prompt(agenda: str) -> str:
+    text = (agenda or "").strip()
+    return text if text else "(empty)"
+
+
+def _off_topic_shortcut() -> dict[str, Any]:
+    return {
+        "context_fit": 0.20,
+        "on_topic": False,
+        "reason": None,
     }
 
 
@@ -92,10 +131,12 @@ async def analyzeAdherence(
     Returns a dict with keys: context_fit, on_topic, reason.
     On any failure returns the same keys with None / error values.
     """
-    agenda_text = agenda or "(no agenda provided — infer the subject domain from the title)"
+    if agenda_unusable(agenda):
+        return _off_topic_shortcut()
+
     prompt = _ADHERENCE_PROMPT.format(
-        title=title,
-        agenda=agenda_text,
+        title=title or "(untitled)",
+        agenda=_format_agenda_for_prompt(agenda),
         transcript=transcript,
     )
 
@@ -104,11 +145,19 @@ async def analyzeAdherence(
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 f"{ollama_url}/api/generate",
-                json={"model": model, "prompt": prompt, "stream": False},
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.1},
+                },
             )
         raw = response.json()["response"]
-        clean = raw.strip().removeprefix("```json").removesuffix("```").strip()
-        parsed = json.loads(clean)
+        clean = raw.strip()
+        if clean.startswith("```"):
+            clean = re.sub(r"^```(?:json)?\s*", "", clean)
+            clean = re.sub(r"\s*```$", "", clean)
+        parsed = json.loads(clean.strip())
         return normalize_adherence_result(parsed)
     except json.JSONDecodeError:
         log.warning("Ollama response JSON parse error", raw=raw[:300])
