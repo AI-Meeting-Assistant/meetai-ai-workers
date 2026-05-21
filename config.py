@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import os
 from dataclasses import dataclass
 
@@ -26,6 +25,13 @@ def _optional_int_env(key: str) -> int | None:
     if raw is None or raw.strip() == "":
         return None
     return int(raw)
+
+
+def _bool_env(key: str, default: bool) -> bool:
+    raw = os.getenv(key)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw not in ("0", "false", "False")
 
 
 @dataclass(frozen=True)
@@ -64,13 +70,20 @@ class Settings:
     max_upload_size_mb: int
     recorded_keep_files: bool
 
+    #: Post-process LLM adherence scores (see workers/text/adherence.py)
+    adherence_on_topic_fit_threshold: float
+    adherence_llm_override_low_boolean: bool
+
     @staticmethod
     def load() -> "Settings":
-        d = _int_env("MEDIA_CHUNK_DURATION_MS", 2000)
+        d = _int_env("MEDIA_CHUNK_DURATION_MS", 5000)
         text_iv = _int_env("TEXT_ANALYSIS_INTERVAL_MS", 30000)
         slots = _optional_int_env("TEXT_TRANSCRIPT_RING_BUFFER_SLOTS")
         if slots is None:
-            slots = max(1, math.ceil(text_iv / d))
+            # One adherence pass per 6 contiguous chunks (~30s at 5s/chunk)
+            slots = 6
+        else:
+            slots = max(1, slots)
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
         return Settings(
             media_chunk_duration_ms=d,
@@ -101,6 +114,8 @@ class Settings:
             upload_dir=os.getenv("UPLOAD_DIR", "./uploads"),
             max_upload_size_mb=_int_env("MAX_UPLOAD_SIZE_MB", 500),
             recorded_keep_files=os.getenv("RECORDED_KEEP_FILES", "0") in ("1", "true", "True"),
+            adherence_on_topic_fit_threshold=_float_env("ADHERENCE_ON_TOPIC_FIT_THRESHOLD", 0.5),
+            adherence_llm_override_low_boolean=_bool_env("ADHERENCE_LLM_OVERRIDE_LOW_BOOLEAN", True),
         )
 
 

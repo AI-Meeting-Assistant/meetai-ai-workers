@@ -7,12 +7,76 @@ transcript is on-topic relative to the meeting title and agenda.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import httpx
 
+from config import get_settings
 from utils.logger import get_logger
 
 log = get_logger(__name__)
+
+_ADHERENCE_PROMPT = """You are a meeting analysis assistant. Score how well a transcript excerpt fits the meeting title and agenda.
+
+SCORING RUBRIC (context_fit, 0.0 to 1.0):
+- 0.85–1.0: Directly about the agenda subject (main theme, named entities, fans, history, current success).
+- 0.70–0.84: Same broad domain as the agenda (e.g. same sport, stadium culture, supporter behavior, comparisons, personal anecdotes tied to the topic). Brief tangents still in-domain count here.
+- 0.50–0.69: Weak link only — do NOT treat as a meeting deviation.
+- Below 0.50: Clear drift — unrelated sport, unrelated industry, personal small talk with no link to the agenda subject, or a different topic altogether.
+
+IMPORTANT:
+- Meetings include natural tangents, comparisons, stories, and side remarks. If they still relate to the agenda's domain, score 0.70+.
+- Only set on_topic to false when context_fit would be below 0.50 AND the conversation has clearly left the agenda's subject area.
+- If on_topic is true, set reason to null.
+- If the agenda mentions personal anecdotes, history, slogans, or fan culture, those are ON-topic when discussing the same subject.
+
+Meeting title: {title}
+Meeting agenda: {agenda}
+
+Transcript excerpt:
+{transcript}
+
+Respond ONLY with a JSON object:
+{{
+  "context_fit": <float 0.0 to 1.0>,
+  "on_topic": <boolean>,
+  "reason": "<one sentence if clearly off-topic, else null>"
+}}"""
+
+
+def normalize_adherence_result(parsed: dict[str, Any]) -> dict[str, Any]:
+    """Align context_fit and on_topic; prefer numeric score over LLM boolean."""
+    settings = get_settings()
+    raw_fit = parsed.get("context_fit")
+    if raw_fit is None:
+        return {
+            "context_fit": None,
+            "on_topic": None,
+            "reason": parsed.get("reason"),
+        }
+
+    try:
+        fit = max(0.0, min(1.0, float(raw_fit)))
+    except (TypeError, ValueError):
+        return {"context_fit": None, "on_topic": None, "reason": "invalid_score"}
+
+    threshold = settings.adherence_on_topic_fit_threshold
+    on_topic = fit >= threshold
+
+    if settings.adherence_llm_override_low_boolean and fit >= 0.65:
+        on_topic = True
+
+    reason = parsed.get("reason")
+    if on_topic:
+        reason = None
+    elif not reason:
+        reason = "Conversation appears off-topic relative to the meeting agenda."
+
+    return {
+        "context_fit": round(fit, 4),
+        "on_topic": on_topic,
+        "reason": reason,
+    }
 
 
 async def analyzeAdherence(
@@ -25,29 +89,15 @@ async def analyzeAdherence(
     """
     Call the local Ollama LLM and return a parsed adherence result.
 
-    Returns a dict with keys: adherence_score, on_topic, reason.
+    Returns a dict with keys: context_fit, on_topic, reason.
     On any failure returns the same keys with None / error values.
     """
-    prompt = f"""You are a meeting analysis assistant. Your job is to evaluate whether a meeting transcript is on-topic relative to the meeting's title and agenda.
-
-IMPORTANT GUIDELINES:
-- Be lenient. Meetings naturally include small talk, clarifications, tangents, and side discussions that are still part of the meeting context. These should NOT be flagged as off-topic.
-- Only flag as off-topic if the conversation has clearly and substantially drifted away from the meeting's purpose — not just a brief tangent.
-- If the agenda is vague or absent, use the meeting title as the primary reference.
-- A context_fit score above 0.5 means the meeting is generally on track.
-
-Meeting title: {title}
-Meeting agenda: {agenda or '(no agenda provided — use the title as reference)'}
-
-Transcript excerpt:
-{transcript}
-
-Respond ONLY with a JSON object, no explanation:
-{{
-  "context_fit": <float 0.0 to 1.0, where 1.0 means perfectly on topic>,
-  "on_topic": <boolean, true unless conversation has clearly and substantially drifted>,
-  "reason": "<one concise sentence explaining why it is off-topic, or null if on-topic>"
-}}"""
+    agenda_text = agenda or "(no agenda provided — infer the subject domain from the title)"
+    prompt = _ADHERENCE_PROMPT.format(
+        title=title,
+        agenda=agenda_text,
+        transcript=transcript,
+    )
 
     raw = ""
     try:
@@ -58,7 +108,8 @@ Respond ONLY with a JSON object, no explanation:
             )
         raw = response.json()["response"]
         clean = raw.strip().removeprefix("```json").removesuffix("```").strip()
-        return json.loads(clean)
+        parsed = json.loads(clean)
+        return normalize_adherence_result(parsed)
     except json.JSONDecodeError:
         log.warning("Ollama response JSON parse error", raw=raw[:300])
         return {"context_fit": None, "on_topic": None, "reason": "parse_error"}
