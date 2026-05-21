@@ -1,55 +1,57 @@
 # meetai-ai-workers — quick setup (team)
 
-## 1. Python env
+## 1. Prerequisites
 
-Python 3.10+ recommended. From this folder:
+Download and install **uv** (fast Python package manager):
+- **macOS/Linux:** `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- **Windows:** `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
+## 2. Environment Setup
 
-## 2. PyTorch with CUDA (recommended)
-
-NVIDIA driver installed (`nvidia-smi` works). **Do not** rely on plain `pip install torch` on Windows — it often installs **CPU** wheels.
+From the project root, create the virtual environment and install all dependencies:
 
 ```powershell
-pip install "torch>=2.6.0" "torchaudio>=2.6.0" --index-url https://download.pytorch.org/whl/cu124
-pip install "numpy>=1.24,<2"
-pip install -r requirements.txt
+# This automatically handles Python version, venv creation, and dependencies
+uv sync --index-strategy unsafe-best-match
 ```
 
-Check:
+### Multi-Platform Support
+The project is configured to automatically handle different hardware:
+- **Windows/Linux with NVIDIA GPU:** `uv` will install **PyTorch with CUDA 12.4** support.
+- **macOS (Intel/Apple Silicon):** `uv` will install the standard CPU/MPS-enabled versions.
+
+## 3. Verification
+
+Check if the environment is correctly set up:
 
 ```powershell
-python -c "import torch; print(torch.__version__, 'cuda=', torch.cuda.is_available())"
+# Verify Torch and CUDA (if on Windows/Linux with GPU)
+uv run python -c "import torch; print(torch.__version__, 'cuda=', torch.cuda.is_available())"
 ```
 
-Expect `2.6.x+cu124` and `cuda= True`.
+**Expected Results:**
+- **Windows/Linux (GPU):** `2.6.x+cu124` and `cuda= True`
+- **macOS/CPU-only:** `2.6.x` and `cuda= False`
 
-## 3. Environment
+## 4. Configuration
 
 ```powershell
 copy .env.example .env
 ```
 
-Edit `REDIS_URL`, `HF_TOKEN` (if using batch pyannote), and keep `WHISPER_MODEL_SIZE=medium` when GPU is available.
+Edit `REDIS_URL`, `HF_TOKEN` (for batch diarization), and `WHISPER_MODEL_SIZE`.
 
-## 4. Run gateway
+## 5. Run Gateway
 
 ```powershell
-python gateway.py
+uv run gateway.py
 ```
 
-Health: `GET http://localhost:8000/health` → workers ready.
-
-## CPU-only fallback
-
-Use `WHISPER_MODEL_SIZE=small` in `.env` and accept slower / queued live ingest.
+Health check: `GET http://localhost:8000/health` should show all workers ready.
 
 ---
 
-## 5. Local LLM — Qwen 2.5 3B via Ollama (text worker)
+## 6. Local LLM — Qwen 2.5 3B via Ollama (text worker)
 
 The text worker calls a locally-running LLM to analyse meeting transcript adherence. Ollama is the recommended runtime — it handles model download, quantisation, and serving automatically.
 
@@ -113,7 +115,7 @@ Any model available on Ollama works — just change `OLLAMA_MODEL` in `.env`:
 | `llama3.2:3b` | ~2 GB | Good alternative |
 | `phi3:mini` | ~2.3 GB | Microsoft, very fast |
 
-## 7. Recorded meeting upload (`POST /ingest-recorded`)
+## 7. Recorded Meeting Upload (`POST /ingest-recorded`)
 
 Used when the frontend uploads a full audio/video file (not live chunks).
 
