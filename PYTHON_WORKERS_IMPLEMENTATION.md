@@ -289,3 +289,71 @@ Frontend: **`VITE_PYTHON_INGEST_BASE_URL`** and **the same effective `D`** (or c
 uvicorn gateway:app --host 0.0.0.0 --port ${PORT:-8000}
 ```
 
+---
+
+## 14. Automated Test Coverage
+
+**Run:** `python -m pytest` (or `uv sync --group dev && uv run pytest`) · **Config:** `tests/conftest.py`, `[tool.pytest.ini_options]` in `pyproject.toml`  
+**Full RAD/SDD map:** [`../docs/TEST_TRACEABILITY.md`](../docs/TEST_TRACEABILITY.md) · **Perf manual:** [`../docs/MANUAL_PERF_CHECKS.md`](../docs/MANUAL_PERF_CHECKS.md)
+
+### Test layout
+
+```
+tests/
+├── unit/                    # No GPU, no Whisper load
+│   test_adherence.py
+│   test_text_pipeline.py
+│   test_audio_schemas.py
+│   test_vad_window.py
+│   test_speaker_registry.py
+│   test_fusion_publisher.py
+│   test_gateway_health.py
+│   test_gateway_schemas.py
+└── integration/
+    test_ticket_validation.py   # fakeredis async ticket match
+```
+
+### Covered (automated)
+
+| Area | Test file | What is verified |
+|------|-----------|------------------|
+| Adherence NLP | `test_adherence.py` | Empty agenda shortcut, score tiers, `normalize_adherence_result` |
+| Text buffer | `test_text_pipeline.py` | Ring flush at N slots, skip without meta, Redis publish (mocked) |
+| Audio Redis shape | `test_audio_schemas.py` | `AudioChunkPayload` → camelCase JSON |
+| VAD (live) | `test_vad_window.py` | Silence vs tone PCM → speech ratio (numpy only) |
+| Speaker ID (live) | `test_speaker_registry.py` | ECAPA registry assign / second speaker |
+| Redis channels | `test_fusion_publisher.py` | `meeting:{id}:audio|vision|text`, `offsetMs` in payload |
+| Gateway health | `test_gateway_health.py` | `_health_is_ready`, failure labels (supervisor mock) |
+| HTTP envelopes | `test_gateway_schemas.py` | Success/error JSON shape |
+| Ticket validation | `test_ticket_validation.py` | `validate_stream_ticket` vs fakeredis |
+
+### Not covered yet (and why)
+
+| Area | Module / endpoint | Short reason |
+|------|-------------------|--------------|
+| `POST /ingest` | `gateway.py` | Lifespan spawns real workers — needs supervisor mock + TestClient |
+| `POST /ingest-recorded` | `gateway.py`, `recorded_processor.py` | Multipart + background task + file I/O |
+| Whisper ASR | `asr.py`, `pipeline.py` | GPU/slow; not run in CI |
+| Pyannote (batch) | `diarization.py`, `batch_runner.py` | HF token + GPU; planned `@pytest.mark.slow` |
+| Live full pipeline | `processLiveChunk` | WebM decode + Whisper integration test missing |
+| Video / MAR | `face_mesh.py`, `aggregator.py` | MediaPipe; manual / `test_webcam.py` only |
+| Text worker Redis loop | `worker_main._redisTask` | Async pubsub harness not added (`test_text_worker_redis.py`) |
+| Ollama live call | `analyzeAdherence` HTTP | Mocked in pipeline tests only |
+| IPC Pipe handoff | `TextHandoffMessage` | Production path uses Redis subscribe, not Pipe |
+| E2E ingest chunk | — | Root `tests/e2e/smoke.md` (manual) |
+
+### RAD / implementation notes
+
+| Topic | Tests | Gap |
+|-------|-------|-----|
+| UC-02.2 live audio | VAD, schema, ECAPA registry | No real Whisper/pyannote in CI |
+| UC-02.2 offline | — | `batch_runner` not automated |
+| UC-02.4 text | adherence + pipeline | No Redis subscribe integration test |
+| UC-07 recorded | — | Gateway recorded route not tested |
+| MAR lip-sync (RAD) | — | MAR exists in video; fusion uses ratio proxy in Node |
+| Sentiment (RAD) | — | Only `context_fit` / `on_topic`, no sentiment field |
+
+### Environment for tests
+
+Tests set safe defaults in `conftest.py` (`MEDIA_CHUNK_DURATION_MS=6000`, `TEXT_TRANSCRIPT_RING_BUFFER_SLOTS=4`). They do **not** load Whisper or MediaPipe at import time.
+
