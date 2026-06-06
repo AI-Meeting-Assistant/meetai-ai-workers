@@ -44,3 +44,48 @@ def test_ring_slots_recomputed_when_intervals_change(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("TEXT_ANALYSIS_INTERVAL_MS", "30000")
     settings = Settings.load()
     assert settings.text_transcript_ring_buffer_slots == 3
+
+
+# --- _int_env / _float_env / _bool_env helper unit tests ---
+
+from config import _int_env, _float_env, _bool_env, _optional_int_env
+
+
+def test_int_env_returns_default_when_missing(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("_TEST_INT", raising=False)
+    assert _int_env("_TEST_INT", 42) == 42
+
+
+def test_int_env_returns_default_on_blank(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("_TEST_INT", "  ")
+    assert _int_env("_TEST_INT", 42) == 42
+
+
+def test_int_env_parses_value(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("_TEST_INT", "100")
+    assert _int_env("_TEST_INT", 0) == 100
+
+
+def test_float_env_parses_value(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("_TEST_FLOAT", "3.14")
+    assert _float_env("_TEST_FLOAT", 0.0) == pytest.approx(3.14)
+
+
+def test_bool_env_false_on_zero(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("_TEST_BOOL", "0")
+    assert _bool_env("_TEST_BOOL", True) is False
+
+
+def test_bool_env_false_on_string_false(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("_TEST_BOOL", "false")
+    assert _bool_env("_TEST_BOOL", True) is False
+
+
+def test_bool_env_true_on_non_falsy_value(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("_TEST_BOOL", "yes")
+    assert _bool_env("_TEST_BOOL", False) is True
+
+
+def test_optional_int_env_returns_none_when_missing(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("_TEST_OPT_INT", raising=False)
+    assert _optional_int_env("_TEST_OPT_INT") is None

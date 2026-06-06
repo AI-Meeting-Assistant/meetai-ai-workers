@@ -7,6 +7,9 @@ import json
 
 from core.fusion_publisher import (
     channel_audio,
+    channel_recorded_complete,
+    channel_recorded_error,
+    channel_summary,
     channel_text,
     channel_vision,
     publish_json,
@@ -27,6 +30,20 @@ def test_channel_names():
     assert channel_audio(mid) == "meeting:abc-123:audio"
     assert channel_vision(mid) == "meeting:abc-123:vision"
     assert channel_text(mid) == "meeting:abc-123:text"
+
+
+def test_remaining_channel_names():
+    mid = "abc-123"
+    assert channel_recorded_complete(mid) == "meeting:abc-123:recorded-complete"
+    assert channel_recorded_error(mid) == "meeting:abc-123:recorded-error"
+    assert channel_summary(mid) == "meeting:abc-123:summary"
+
+
+def test_publish_json_preserves_unicode():
+    r = FakeRedis()
+    publish_json(r, channel_text("m2"), {"msg": "merhaba dünya"})
+    _, raw = r.messages[0]
+    assert "merhaba dünya" in raw
 
 
 def test_publish_json_includes_offset():

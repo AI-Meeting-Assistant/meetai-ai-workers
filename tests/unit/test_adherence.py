@@ -42,3 +42,32 @@ def test_normalize_off_topic_tier():
     result = normalize_adherence_result({"context_fit": 0.20, "reason": None})
     assert result["on_topic"] is False
     assert result["reason"]
+
+
+def test_agenda_unusable_none_input():
+    assert agenda_unusable(None) is True
+
+
+def test_snap_context_fit_returns_none_for_out_of_range():
+    assert snap_context_fit(1.5) is None
+    assert snap_context_fit(-0.1) is None
+
+
+def test_snap_context_fit_returns_none_for_non_numeric():
+    assert snap_context_fit("bad") is None
+
+
+def test_normalize_missing_context_fit_key():
+    result = normalize_adherence_result({"context_fit": None, "reason": "x"})
+    assert result["context_fit"] is None
+    assert result["on_topic"] is None
+
+
+def test_normalize_invalid_string_score():
+    result = normalize_adherence_result({"context_fit": "invalid"})
+    assert result["reason"] == "invalid_score"
+
+
+def test_normalize_preserves_custom_reason_for_020():
+    result = normalize_adherence_result({"context_fit": 0.20, "reason": "custom"})
+    assert result["reason"] == "custom"
