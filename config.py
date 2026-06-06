@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 
@@ -75,12 +76,11 @@ class Settings:
 
     @staticmethod
     def load() -> "Settings":
-        d = _int_env("MEDIA_CHUNK_DURATION_MS", 5000)
+        d = _int_env("MEDIA_CHUNK_DURATION_MS", 6000)
         text_iv = _int_env("TEXT_ANALYSIS_INTERVAL_MS", 30000)
         slots = _optional_int_env("TEXT_TRANSCRIPT_RING_BUFFER_SLOTS")
         if slots is None:
-            # One adherence pass per 6 contiguous chunks (~30s at 5s/chunk)
-            slots = 6
+            slots = max(1, math.ceil(text_iv / d))
         else:
             slots = max(1, slots)
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
