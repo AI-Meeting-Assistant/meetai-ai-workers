@@ -293,7 +293,7 @@ uvicorn gateway:app --host 0.0.0.0 --port ${PORT:-8000}
 
 ## 14. Automated Test Coverage
 
-**Run:** `python -m pytest` (or `uv sync --group dev && uv run pytest`) · **Config:** `tests/conftest.py`, `[tool.pytest.ini_options]` in `pyproject.toml`  
+**Run:** `python -m pytest` (or `uv sync --group dev && uv run pytest`) · **Perf:** `python -m pytest tests/perf` (excluded from default via `--ignore=tests/perf`) · **Config:** `tests/conftest.py`, `[tool.pytest.ini_options]` in `pyproject.toml`  
 **Full RAD/SDD map:** [`../docs/TEST_TRACEABILITY.md`](../docs/TEST_TRACEABILITY.md) · **Perf manual:** [`../docs/MANUAL_PERF_CHECKS.md`](../docs/MANUAL_PERF_CHECKS.md)
 
 ### Test layout

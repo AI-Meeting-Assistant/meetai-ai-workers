@@ -166,8 +166,10 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = "--ignore=tests/perf"
 markers = [
     "slow: GPU or heavy model tests (skipped in default CI)",
+    "perf: CPU micro-benchmarks (run via pytest tests/perf)",
 ]
 
 [tool.uv]
