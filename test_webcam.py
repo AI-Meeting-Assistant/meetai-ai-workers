@@ -19,11 +19,11 @@ STRIDE = 3             # analyze every Nth frame (matches pipeline)
 
 cap = cv2.VideoCapture(0)
 if not cap.isOpened():
-    print("Webcam açılamadı — macOS kamera izni gerekiyor.")
+    print("Failed to open webcam — macOS camera permission required.")
     exit(1)
 
 cap.set(cv2.CAP_PROP_FPS, FPS)
-print(f"Webcam açıldı. Her {CHUNK_DURATION_S}s'de bir sonuç basılacak. Çıkmak için Ctrl+C.\n")
+print(f"Webcam opened. Results will be printed every {CHUNK_DURATION_S}s. Press Ctrl+C to exit.\n")
 
 offset_ms = 0
 chunk_idx = 0
@@ -112,7 +112,7 @@ try:
         offset_ms += CHUNK_DURATION_S * 1000
 
 except KeyboardInterrupt:
-    print("\nDurduruluyor...")
+    print("\nStopping...")
 finally:
     cap.release()
     evict(MEETING_ID)

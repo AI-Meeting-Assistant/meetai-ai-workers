@@ -183,22 +183,22 @@ def runBatchRunner() -> None:
 
     if result.vad_result:
         vr = result.vad_result
-        print("\nVAD ANALİZİ")
-        print(f"Konuşma süresi : {vr['speech_time']/60:.2f} dk")
-        print(f"Sessizlik süresi : {vr['silence_time']/60:.2f} dk")
-        print(f"Konuşma oranı : %{vr['speech_ratio']:.2f}")
+        print("\nVAD ANALYSIS")
+        print(f"Speech duration : {vr['speech_time']/60:.2f} min")
+        print(f"Silence duration : {vr['silence_time']/60:.2f} min")
+        print(f"Speech ratio : {vr['speech_ratio']:.2f}%")
 
     if result.diarization_result:
-        print("\nKONUŞMACI ANALİZİ")
+        print("\nSPEAKER ANALYSIS")
         for spk, dur in sorted(
             result.diarization_result["speaker_times"].items(),
             key=lambda x: x[1],
             reverse=True,
         ):
-            print(f"{spk}: {dur/60:.2f} dk")
+            print(f"{spk}: {dur/60:.2f} min")
 
     if not run_transcription:
-        print("Transcription kapalı, işlem tamamlandi.")
+        print("Transcription disabled, process complete.")
         return
 
     outputs = Path(os.getenv("BATCH_OUTPUT_DIR", "outputs"))
@@ -211,12 +211,12 @@ def runBatchRunner() -> None:
                 f.write(
                     f"[{seg['speaker']} | {seg['start']:.2f}-{seg['end']:.2f}] {seg['text']}\n"
                 )
-        print("Speaker-aligned transkript hazır →", out_path)
+        print("Speaker-aligned transcript ready →", out_path)
     elif result.transcript:
         raw_path = outputs / "transcript_raw.txt"
         with open(raw_path, "w", encoding="utf-8") as f:
             f.write(result.transcript)
-        print("Raw transkript hazır →", raw_path)
+        print("Raw transcript ready →", raw_path)
 
 
 if __name__ == "__main__":
