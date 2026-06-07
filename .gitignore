@@ -49,7 +49,7 @@ env/
 ENV/
 env.bak/
 
-# --- ML caches (ağırlıklar ignore değil; istersen LFS kullan) ---
+# --- ML caches (weights not ignored by default; use LFS if needed) ---
 .cache/
 *.onnx
 

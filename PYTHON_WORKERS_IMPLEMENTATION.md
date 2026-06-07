@@ -18,15 +18,15 @@ Our system is decomposed into these main components:
 
 ### 1.1. End-to-end contract (concise)
 
-Let **`D`** = configured media chunk duration in ms (`MEDIA_CHUNK_DURATION_MS`, **default `2000`**). Values below use **`D`**; defaults are **`D=2000`**, ASR context **10s**, text interval **30s**.
+Let **`D`** = configured media chunk duration in ms (`MEDIA_CHUNK_DURATION_MS`, **default `6000`**). Values below use **`D`**; defaults are **`D=6000`**, ASR context **10s**, text interval **30s** (5 transcript chunks).
 
 | Concern | Agreement |
 |---------|-----------|
 | **Ingest** | One HTTP request per timeline window of length **`D`**: `POST /ingest`, `multipart/form-data`. |
-| **Multipart parts** | `meetingId`, `streamTicket`, `offsetMs`, `audioChunk`, `videoChunk`. |
+| **Multipart parts** | `meetingId`, `streamTicket`, `offsetMs`, `audioChunk`, `videoFrames[]`. |
 | **Timeline** | `offsetMs` = ms from **`startedAt`** (meeting `IN_PROGRESS`); **source of truth: client**. First window **`offsetMs = 0`**. Subsequent windows: **`offsetMs` increases by `D`** (`0`, `D`, `2D`, …) when the client sends contiguous windows. |
 | **Implicit window** | Audio/video bytes for one request represent **`[offsetMs, offsetMs + D)`** relative to meeting start. End bound is not sent separately. |
-| **Alignment** | Same request’s `audioChunk` and `videoChunk` share the **same** `offsetMs`; **audio** and **vision** Redis messages for that ingest **MUST** use the **same** `offsetMs`. |
+| **Alignment** | Same request’s `audioChunk` and `videoFrames[]` share the **same** `offsetMs`; **audio** and **vision** Redis messages for that ingest **MUST** use the **same** `offsetMs`. |
 | **Transcript on Redis** | **Canonical per-window transcript** is published on **`meeting:{meetingId}:audio`** together with other audio-analysis fields (**not** owned solely by the text worker). |
 | **Text Redis** | **`meeting:{meetingId}:text`**: periodic **semantic** output (agenda/context), **`D`-independent cadence**; see §5. |
 
@@ -36,9 +36,9 @@ All three durations are **configuration-driven** (environment variables below). 
 
 | Role | Env variable | Default | Meaning |
 |------|----------------|---------|---------|
-| **Media / ingest / fusion stride** | `MEDIA_CHUNK_DURATION_MS` | `2000` | Nominal duration **`D`** (ms) of each `audioChunk`/`videoChunk` and step between successive `offsetMs` values **when uploads are contiguous**. Frontend and gateway validation MUST stay consistent with whatever value is deployed. |
+| **Media / ingest / fusion stride** | `MEDIA_CHUNK_DURATION_MS` | `6000` | Nominal duration **`D`** (ms) of each `audioChunk`/`videoFrames[]` window and step between successive `offsetMs` values **when uploads are contiguous**. Frontend and gateway validation MUST stay consistent with whatever value is deployed. |
 | **ASR sliding context** | `ASR_CONTEXT_WINDOW_MS` | `10000` | **Internal audio pipeline only:** approximate length of the **rolling acoustic/context window** used to stabilize transcript decoding for **each new chunk** (~10 s default). Does **not** change HTTP frequency or **`offsetMs`**. |
-| **Text analysis period** | `TEXT_ANALYSIS_INTERVAL_MS` | `30000` | How often (ms) the text worker runs agenda/context inference **approximately** (~30 s default). **Not** triggered by “ring full”; timing is **timer-driven**. |
+| **Text analysis cadence** | `TEXT_ANALYSIS_INTERVAL_MS` | `30000` | Target interval between adherence passes (~30 s). **Implementation:** text worker flushes after **`ceil(TEXT_ANALYSIS_INTERVAL_MS / MEDIA_CHUNK_DURATION_MS)`** transcript chunks (default **5** at D=6000). |
 
 **Ring buffer sizing:** Maintain a **per-meeting sliding ring** of transcript **segments** (as produced by the audio path for ingestion steps). Capacity SHOULD default to **`ceil(TEXT_ANALYSIS_INTERVAL_MS / MEDIA_CHUNK_DURATION_MS)`** segments so the buffer nominally spans **about one analysis interval** of transcript history. Optional override:
 
@@ -99,7 +99,7 @@ grad-project-ai-workers/
 └── requirements.txt
 ```
 
-*(If you prefer zero new file, load the same variables in `gateway.py` / worker mains — keep a single module that defines defaults `2000` / `10000` / `30000`.)*
+*(Defaults in `config.py`: `6000` / `10000` / `30000`; ring slots derived as `ceil(30000/6000)=5`.)*
 
 **Naming rules**
 
@@ -122,10 +122,10 @@ Each ingest covers one timeline window of **`D`** milliseconds (`MEDIA_CHUNK_DUR
 | `meetingId` | `str` | Active meeting UUID |
 | `streamTicket` | `str` | Redis stream ticket from Node (`POST /api/v1/meetings/:id/start`) |
 | `offsetMs` | `str` *(→ `int`)* | Start of this window relative to **`startedAt`**, in ms (**client authoritative**). First window **`0`**. Contiguous uploads: **`0`, `D`, `2D`, …**. Gateway MAY validate multiples of **`D`** and return **`400`** + standard envelope if not. |
-| `videoChunk` | `UploadFile` | Video bytes for **`[offsetMs, offsetMs + D)`** |
+| `videoFrames[]` | `UploadFile[]` | JPEG frames for **`[offsetMs, offsetMs + D)`** |
 | `audioChunk` | `UploadFile` | Audio bytes for the **same** interval |
 
-**Gateway** validates the ticket, parses `offsetMs`, routes `{ meetingId, videoChunk, offsetMs }` → **video** worker and `{ meetingId, audioChunk, offsetMs }` → **audio** worker. The **`streamTicket`** **must never** reach workers.
+**Gateway** validates the ticket, parses `offsetMs`, routes `{ meetingId, videoFrames, offsetMs }` → **video** worker and `{ meetingId, audioChunk, offsetMs }` → **audio** worker. The **`streamTicket`** **must never** reach workers.
 
 **Node/Data Fusion:** The backend sliding window SHOULD be consistent with **`MEDIA_CHUNK_DURATION_MS`** (defaults to 2 s; if you change `D`, coordinate Node fusion config).
 
@@ -145,7 +145,7 @@ There is **no** `textChunk` on `POST /ingest`.
 The text worker:
 
 1. Appends arriving segments into a **per-meeting sliding ring** (capacity §1.2).
-2. On each **`TEXT_ANALYSIS_INTERVAL_MS`** tick (per meeting with active traffic), runs agenda/context analysis over the **current ring contents**.
+2. After **`text_transcript_ring_buffer_slots`** transcript chunks (default **5** ≈ 30 s at D=6000), runs agenda/context analysis over the buffered transcript.
 3. Publishes results to **`meeting:{meetingId}:text`** (see §5). **Optional:** include a short **excerpt** or **covered `offsetMs` range** for traceability; **canonical** per-window transcript remains on **`:audio`**.
 
 ---
@@ -191,7 +191,7 @@ Malformed/empty chunks: publish **stub** payload with **`offsetMs`** preserved a
 
 ## 6. Software Control & Concurrency
 
-Target end-to-end latency remains aligned with SDD (≤ **`D`** under nominal conditions when **`MEDIA_CHUNK_DURATION_MS`** defaults to 2000). Use **`asyncio`** for I/O-bound paths; **`redis.asyncio`** for ticket reads.
+Target end-to-end latency remains aligned with SDD (≤ **`D`** under nominal conditions when **`MEDIA_CHUNK_DURATION_MS`** defaults to 6000). Use **`asyncio`** for I/O-bound paths; **`redis.asyncio`** for ticket reads.
 
 Use **separate OS processes** for audio, video, and text workers (**not** threads for compute-heavy modality work — SDD §3.5.3). **Gateway:** no inference, no Redis publish.
 
@@ -239,10 +239,10 @@ Type hints, typed config for durations, **Pydantic** for wire shapes, no bare `e
 |----------|----------|---------|-------------|
 | `REDIS_URL` | Yes | — | Same Redis as Node |
 | `PORT` | No | `8000` | FastAPI listen port |
-| `MEDIA_CHUNK_DURATION_MS` | No | `2000` | Ingest/fusion stride **`D`** (ms); client `offsetMs` step must match |
+| `MEDIA_CHUNK_DURATION_MS` | No | `6000` | Ingest/fusion stride **`D`** (ms); client `offsetMs` step must match |
 | `ASR_CONTEXT_WINDOW_MS` | No | `10000` | Internal ASR sliding context (ms) |
-| `TEXT_ANALYSIS_INTERVAL_MS` | No | `30000` | Text worker timer period (ms) |
-| `TEXT_TRANSCRIPT_RING_BUFFER_SLOTS` | No | *(derive)* | Override ring capacity; default `ceil(TEXT_ANALYSIS_INTERVAL_MS / MEDIA_CHUNK_DURATION_MS)` |
+| `TEXT_ANALYSIS_INTERVAL_MS` | No | `30000` | Target adherence interval (ms); slots = ceil(interval / D) |
+| `TEXT_TRANSCRIPT_RING_BUFFER_SLOTS` | No | *(derive)* | Override ring capacity; default `ceil(TEXT_ANALYSIS_INTERVAL_MS / MEDIA_CHUNK_DURATION_MS)` (= **5** at defaults) |
 | `HF_TOKEN` | No | *(empty)* | Hugging Face token for gated **pyannote** models (**batch**/offline paths in `vad_batch.py` / `diarization.py`; also respects `HUGGINGFACE_HUB_TOKEN`) |
 | `WHISPER_MODEL_SIZE` | No | `small` | Live ASR singleton + batch runner model id (`tiny`/`base`/`small`/…) |
 | `WHISPER_LANGUAGE` | No | `tr` | Whisper language code |
