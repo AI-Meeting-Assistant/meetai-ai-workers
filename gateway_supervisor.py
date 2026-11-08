@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+import os
 import time
 import traceback
 from queue import Empty
@@ -12,7 +13,7 @@ from utils.logger import get_logger
 
 log = get_logger(__name__)
 
-READINESS_SECONDS = 90  # Whisper load on Windows spawn can take 30-60 s on first run
+READINESS_SECONDS = float(os.getenv("WORKER_READINESS_SECONDS", "300"))
 
 
 def _wait_worker_readiness(

@@ -87,7 +87,13 @@ app = FastAPI(title="meetai-ai-workers gateway", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174"],
+    allow_origins=[
+        origin.strip()
+        for origin in os.getenv(
+            "CLIENT_ORIGINS", "http://localhost:5173,http://localhost:5174,null"
+        ).split(",")
+        if origin.strip()
+    ],
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
