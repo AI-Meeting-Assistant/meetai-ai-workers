@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-import torch
 import whisper
+
+from .device import preferred_device, prepare_whisper_device
 
 
 class Transcriber:
@@ -15,7 +16,8 @@ class Transcriber:
         self, model_size: str = "medium", device: str | None = None, language: str = "tr"
     ):
         if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            device = preferred_device()
+        prepare_whisper_device(device)
         self.model = whisper.load_model(model_size, device=device)
         self.language = language
 

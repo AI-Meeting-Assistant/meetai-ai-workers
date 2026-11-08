@@ -1052,7 +1052,6 @@ dependencies = [
     { name = "torch-pitch-shift", marker = "sys_platform == 'darwin' or sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "torchaudio", version = "2.6.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
     { name = "torchaudio", version = "2.6.0+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "torchcodec", marker = "sys_platform == 'darwin' or sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "torchmetrics", marker = "sys_platform == 'darwin' or sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "tqdm", marker = "sys_platform == 'darwin' or sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "transformers", marker = "sys_platform == 'darwin' or sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -1214,7 +1213,6 @@ requires-dist = [
     { name = "torch-pitch-shift", specifier = "==1.2.5" },
     { name = "torchaudio", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = "==2.6.0" },
     { name = "torchaudio", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = "==2.6.0", index = "https://download.pytorch.org/whl/cu124" },
-    { name = "torchcodec", specifier = "==0.12.0" },
     { name = "torchmetrics", specifier = "==1.9.0" },
     { name = "tqdm", specifier = "==4.67.3" },
     { name = "transformers", specifier = "==4.49.0" },
@@ -2608,17 +2606,6 @@ dependencies = [
 wheels = [
     { url = "https://download-r2.pytorch.org/whl/cu124/torchaudio-2.6.0%2Bcu124-cp310-cp310-linux_x86_64.whl", hash = "sha256:6b54f97fff96b4ba3da44b6b3f50727c25122d1479107b119d1275944ec83ea1", upload-time = "2025-01-30T01:04:23Z" },
     { url = "https://download-r2.pytorch.org/whl/cu124/torchaudio-2.6.0%2Bcu124-cp310-cp310-win_amd64.whl", hash = "sha256:2b9cdda37156abe395e470ce16d9626d71b73f73eab6fc184f476f843ba12cc1", upload-time = "2025-01-30T01:04:23Z" },
-]
-
-[[package]]
-name = "torchcodec"
-version = "0.12.0"
-source = { registry = "https://pypi.org/simple" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/1f/66/8a674a3c86e745db5cd43219dd4b95b354b40494da01239b5cc70a9d9099/torchcodec-0.12.0-cp310-cp310-macosx_14_0_arm64.whl", hash = "sha256:52f34deb11c047fe77013b01bffdb04c47eecd20c1853ec4f704ee6fa27875d6", size = 3833091, upload-time = "2026-05-14T19:56:35.297Z" },
-    { url = "https://files.pythonhosted.org/packages/7a/f9/9b6acc52accd174649553d0d19f0d6fb0af7ef96cec30424891153a0979f/torchcodec-0.12.0-cp310-cp310-manylinux_2_28_aarch64.whl", hash = "sha256:1d384a31910006b15a50b67cb9285ce1c98f2876d416e8492292583bd406c434", size = 2463632, upload-time = "2026-05-14T19:56:37.343Z" },
-    { url = "https://files.pythonhosted.org/packages/a6/2f/0968b9e9a811c212523a9af6e6b54cc5d26c239726447c5bb6286d8248fb/torchcodec-0.12.0-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:2e78f90396925d8dc026deb79333ead202fdac6404635076d37e52ee89b8d759", size = 2402946, upload-time = "2026-05-14T19:56:39.295Z" },
-    { url = "https://files.pythonhosted.org/packages/0c/45/5f5504fab93e9d4aa9bc94545fe67f4c735d836ce65a7885bf6ece9b9070/torchcodec-0.12.0-cp310-cp310-win_amd64.whl", hash = "sha256:70973e44a0b89a442f09901fccc05210917983781268576d16d2080de0689f84", size = 2113935, upload-time = "2026-05-14T19:56:41.067Z" },
 ]
 
 [[package]]

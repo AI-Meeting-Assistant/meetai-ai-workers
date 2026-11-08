@@ -7,6 +7,8 @@ from typing import List, Tuple
 
 import numpy as np
 
+from .device import preferred_device, prepare_whisper_device
+
 
 def _resampleLinearTo16k(samples: np.ndarray, src_sr: int) -> np.ndarray:
     import whisper as whisper_pkg
@@ -27,10 +29,9 @@ _engine_singleton: "_WhisperEngine | None" = None
 class _WhisperEngine:
     def __init__(self, *, model_size: str, language: str) -> None:
         import whisper
-        import torch
 
-        # Whisper uses float64 ops incompatible with MPS; CUDA only, else CPU.
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = preferred_device()
+        prepare_whisper_device(device)
         self._model = whisper.load_model(model_size, device=device)
         self._language = language
 

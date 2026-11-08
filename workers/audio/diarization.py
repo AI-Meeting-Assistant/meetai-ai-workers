@@ -14,6 +14,8 @@ from . import _torch_compat  # noqa: F401 — PyTorch 2.6+ weights_only vs pyann
 
 import torch
 
+from .device import preferred_device
+
 try:
     from pyannote.audio import Pipeline as PyannotePipeline
 except ImportError:
@@ -29,7 +31,7 @@ class SpeakerDiarizer:
         if PyannotePipeline is None:
             raise RuntimeError("pyannote.audio is not installed")
         if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            device = preferred_device()
         if hf_token is None:
             hf_token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
         if hf_token:

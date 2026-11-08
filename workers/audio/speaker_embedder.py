@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 import numpy as np
 
+from .device import preferred_device
+
 TARGET_SR = 16000
 _encoder = None
 
@@ -23,11 +25,10 @@ def _get_encoder():
     global _encoder
     if _encoder is not None:
         return _encoder
-    import torch
     from speechbrain.inference.speaker import EncoderClassifier
 
     try:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = preferred_device()
     except Exception:
         device = "cpu"
     _encoder = EncoderClassifier.from_hparams(

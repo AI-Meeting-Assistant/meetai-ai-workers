@@ -5,6 +5,8 @@ from __future__ import annotations
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from .device import preferred_device
+
 
 class TranscriptRefiner:
     def __init__(
@@ -14,7 +16,7 @@ class TranscriptRefiner:
         max_new_tokens: int = 256,
     ):
         if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            device = preferred_device()
         self.device = device
         self.max_new_tokens = max_new_tokens
         model_dtype = torch.float16 if self.device == "cuda" else torch.float32
