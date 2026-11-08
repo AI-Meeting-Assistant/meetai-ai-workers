@@ -15,23 +15,24 @@ From the project root, create the virtual environment and install all dependenci
 uv sync --index-strategy unsafe-best-match
 ```
 
-### Multi-Platform Support
-The project is configured to automatically handle different hardware:
-- **Windows/Linux with NVIDIA GPU:** `uv` will install **PyTorch with CUDA 12.4** support.
-- **macOS (Intel/Apple Silicon):** `uv` will install the standard CPU/MPS-enabled versions.
+### Current platform support
+The lockfile selects wheels by operating system, not by detecting GPU hardware:
+- **Windows/Linux x86-64 with NVIDIA:** `uv sync` selects the CUDA 12.4 PyTorch wheels. CUDA runs when a compatible NVIDIA GPU and driver are available.
+- **Apple Silicon macOS:** `uv sync` selects the PyPI PyTorch wheel. An offline install dry run passes for macOS 13 ARM64. PyTorch audio models select MPS when available. Whisper word timestamps move their alignment calculation to CPU because MPS cannot use float64. The MediaPipe Python video path still runs on CPU; full Metal processing is not yet supported.
+
+The Docker worker image is Linux-based and uses the CUDA wheels. It requires an NVIDIA GPU for GPU acceleration.
+Build it independently from this repository with `docker build -t meetai-ai-workers .`.
 
 ## 3. Verification
 
 Check if the environment is correctly set up:
 
 ```powershell
-# Verify Torch and CUDA (if on Windows/Linux with GPU)
-uv run python -c "import torch; print(torch.__version__, 'cuda=', torch.cuda.is_available())"
+# Verify the installed wheel and available accelerator
+uv run python -c "import torch; print(torch.__version__, 'cuda=', torch.cuda.is_available(), 'mps=', torch.backends.mps.is_available())"
 ```
 
-**Expected Results:**
-- **Windows/Linux (GPU):** `2.6.x+cu124` and `cuda= True`
-- **macOS/CPU-only:** `2.6.x` and `cuda= False`
+`cuda=True` requires a working NVIDIA GPU and driver. `mps=True` means the PyTorch audio models will select Metal on this Mac.
 
 ## 4. Configuration
 

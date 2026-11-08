@@ -1,0 +1,13 @@
+**/.git
+**/node_modules
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/dist
+**/dist-electron
+**/release
+**/.env
+**/.env.*
+**/uploads
+**/outputs
+**/*.log
